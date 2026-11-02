@@ -8,15 +8,15 @@ owner=herdr-mods
 
 usage() {
 	cat <<EOF
-usage: install.sh install|uninstall|status [--app-home DIR] [--force] [MOD...]
+usage: install.sh install|uninstall|status [--app-home DIR] [--force] [ITEM...]
 
-  install    copy mods into the app home; upgrades older installs
-  uninstall  remove mods this script installed
-  status     compare installed mods with the repo, changing nothing
+  install    copy items into the app home; upgrades older installs
+  uninstall  remove items this script installed
+  status     compare installed items with the repo, changing nothing
 
   --app-home DIR  default: \$HERDR_APP_HOME, then ~/.config/herdr-app
   --force         replace or remove local edits, and allow downgrades
-  MOD             a folder in mods/; default: all of them
+  ITEM            mods/<name> or layouts/<name>; default: all of them
 EOF
 }
 
@@ -25,63 +25,81 @@ die() {
 	exit 1
 }
 
-# Lines "file=<sha256> <path>" for a mod folder, skipping dotfiles and the
+refuse() {
+	printf 'install.sh: %s\n' "$*" >&2
+	refused=1
+}
+
+hash_lines='s|^\([0-9a-f]*\)  \./|file=\1 |'
+
+# Lines "file=<sha256> <path>" for a folder, skipping dotfiles and the
 # files the app writes into every mod folder it loads.
 hash_files() {
 	(cd "$1" && find . -type f ! -path '*/.*' ! -path ./gpui-kit.d.ts ! -path ./jsconfig.json -exec sha256sum {} +) |
-		sed 's|^\([0-9a-f]*\)  \./|file=\1 |' | LC_ALL=C sort
+		sed "$hash_lines" | LC_ALL=C sort
 }
 
-# Copies a repo mod to $tmp/stage/<mod> as it will be installed.
-stage() {
-	staged=$tmp/stage/$1
-	mkdir -p "$tmp/stage"
-	rm -rf "$staged"
-	cp -R "$repo/mods/$1" "$staged"
-	rm -f "$staged/VERSION"
-	find "$staged" -name '.*' -prune -exec rm -rf {} +
+# Selects an item, mods/<name> or layouts/<name>, and sets its paths: the
+# repo source, its VERSION file, the installed target, the installed manifest
+# and the staging folder. A layout is one JSON file, so its manifest sits
+# beside it under a name the app won't load as a layout.
+select_item() {
+	item=$1 kind=${1%%/*} name=${1#*/}
+	staged=$tmp/stage/$item
+	case $kind in
+	mods)
+		src=$repo/mods/$name
+		version_file=$src/VERSION
+		target=$app_home/mods/$name
+		manifest=$target/$manifest_name
+		;;
+	layouts)
+		src=$repo/layouts/$name.json
+		version_file=$repo/layouts/$name.VERSION
+		target=$app_home/layouts/$name.json
+		manifest=$app_home/layouts/.$name$manifest_name
+		;;
+	esac
 }
 
-check_staged() {
-	mkdir -p "$tmp/check-home"
-	if ! HERDR_APP_HOME=$tmp/check-home HOME=$tmp/check-home herdr-app check "$staged" >"$tmp/check.log" 2>&1; then
-		cat "$tmp/check.log" >&2
-		return 1
+# Turns an argument into an item, accepting what shell completion gives:
+# mods/<name>/ and layouts/<name>.json.
+parse_item() {
+	case $1 in
+	mods/*) parsed=${1%/} ;;
+	layouts/*) parsed=${1%.json} ;;
+	*) die "$1 is not mods/<name> or layouts/<name>" ;;
+	esac
+	case ${parsed#*/} in
+	'' | .* | */*) die "no $1 in this repo" ;;
+	esac
+	if [ "${parsed%%/*}" = mods ]; then
+		[ -d "$repo/$parsed" ] || die "no $1 in this repo"
+	else
+		[ -f "$repo/$parsed.json" ] || die "no $1 in this repo"
 	fi
-}
-
-write_manifest() {
-	{
-		echo "format=$manifest_format"
-		echo "owner=$owner"
-		echo "mod=$1"
-		echo "version=$2"
-		if [ -n "$commit" ]; then
-			echo "commit=$commit"
-		fi
-		hash_files "$staged"
-	} >"$staged/$manifest_name"
-}
-
-read_repo_version() {
-	repo_version=''
-	if [ -f "$repo/mods/$1/VERSION" ]; then
-		read -r repo_version <"$repo/mods/$1/VERSION" || :
-	fi
-	is_version "$repo_version" || die "$1: mods/$1/VERSION must hold MAJOR.MINOR.PATCH"
 }
 
 is_version() {
 	printf '%s\n' "$1" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'
 }
 
+read_repo_version() {
+	repo_version=''
+	if [ -f "$version_file" ]; then
+		read -r repo_version <"$version_file" || :
+	fi
+	is_version "$repo_version" || die "${version_file#"$repo"/} must hold MAJOR.MINOR.PATCH"
+}
+
 read_manifest() {
-	m_format='' m_owner='' m_mod='' m_version=''
+	m_format='' m_owner='' m_item='' m_version=''
 	while IFS= read -r line; do
 		case $line in
 		format=*) m_format=${line#format=} ;;
 		owner=*) m_owner=${line#owner=} ;;
-		mod=*) m_mod=${line#mod=} ;;
+		mod=*) m_item=mods/${line#mod=} ;;
+		layout=*) m_item=layouts/${line#layout=} ;;
 		version=*) m_version=${line#version=} ;;
 		esac
 	done <"$1"
@@ -105,64 +123,137 @@ compare_versions() {
 	state=same
 }
 
-# Sets state to absent, foreign, older, same or newer. For the last three,
-# edited is set when the installed files no longer match the manifest.
+installed_hashes() {
+	case $kind in
+	mods) hash_files "$target" ;;
+	layouts) (cd "$app_home/layouts" && sha256sum "./$name.json") | sed "$hash_lines" ;;
+	esac
+}
+
+# For the selected item, sets state to absent, foreign, older, same or newer.
+# For the last three, edited is set when the installed files no longer match
+# the manifest.
 classify() {
-	read_repo_version "$1"
-	target=$app_home/mods/$1
+	read_repo_version
 	installed_version='' reason='' edited=''
 	if [ ! -e "$target" ]; then
 		state=absent
 		return
 	fi
 	state=foreign
-	if [ ! -f "$target/$manifest_name" ]; then
+	if [ ! -f "$manifest" ]; then
 		reason="no $manifest_name manifest"
 		return
 	fi
-	read_manifest "$target/$manifest_name"
+	read_manifest "$manifest"
 	if [ "$m_format" != "$manifest_format" ]; then
 		reason="manifest format $m_format, expected $manifest_format"
 	elif [ "$m_owner" != "$owner" ]; then
 		reason="owned by $m_owner"
-	elif [ "$m_mod" != "$1" ]; then
-		reason="manifest is for $m_mod"
+	elif [ "$m_item" != "$item" ]; then
+		reason="manifest is for $m_item"
 	elif ! is_version "$m_version"; then
 		reason="manifest version $m_version is not MAJOR.MINOR.PATCH"
 	else
 		installed_version=$m_version
 		compare_versions "$installed_version" "$repo_version"
-		if [ "$(hash_files "$target")" != "$(grep '^file=' "$target/$manifest_name")" ]; then
+		if [ "$(installed_hashes)" != "$(grep '^file=' "$manifest")" ]; then
 			edited=1
 		fi
 	fi
 }
 
+# Copies the selected item to its staging folder as it will be installed.
+stage() {
+	rm -rf "$staged"
+	mkdir -p "$staged"
+	case $kind in
+	mods)
+		cp -R "$src/." "$staged"
+		rm -f "$staged/VERSION"
+		find "$staged" -name '.*' -prune -exec rm -rf {} +
+		;;
+	layouts) cp "$src" "$staged/$name.json" ;;
+	esac
+}
+
 # After stage and classify: whether the staged files differ from the installed manifest.
 repo_changed() {
-	[ "$(hash_files "$staged")" != "$(grep '^file=' "$target/$manifest_name")" ]
+	[ "$(hash_files "$staged")" != "$(grep '^file=' "$manifest")" ]
 }
 
-refuse() {
-	printf 'install.sh: %s\n' "$*" >&2
-	refused=1
+check_staged() {
+	[ "$kind" = mods ] || return 0
+	mkdir -p "$tmp/check-home"
+	if ! HERDR_APP_HOME=$tmp/check-home HOME=$tmp/check-home herdr-app check "$staged" >"$tmp/check.log" 2>&1; then
+		cat "$tmp/check.log" >&2
+		return 1
+	fi
 }
 
-# Stages and checks every mod first, so a refusal leaves the app home unchanged.
+write_manifest() {
+	{
+		echo "format=$manifest_format"
+		echo "owner=$owner"
+		echo "${kind%s}=$name"
+		echo "version=$repo_version"
+		if [ -n "$commit" ]; then
+			echo "commit=$commit"
+		fi
+		hash_files "$staged"
+	} >"$staged/$manifest_name"
+}
+
+install_staged() {
+	mkdir -p "$app_home/$kind"
+	case $kind in
+	mods)
+		rm -rf "$target"
+		cp -R "$staged" "$target"
+		;;
+	layouts)
+		cp "$staged/$manifest_name" "$manifest"
+		cp "$staged/$name.json" "$target"
+		;;
+	esac
+}
+
+# A running window keeps showing a layout after its file is gone, along with
+# the mods it uses, so move that window to main first.
+switch_away() {
+	shown=$(HERDR_APP_HOME=$app_home herdr-app status 2>/dev/null | sed -n 's/^  "layout": "\(.*\)",$/\1/p')
+	if [ "$shown" = "$name" ]; then
+		HERDR_APP_HOME=$app_home herdr-app 'do' layout.switch '{"name":"main"}' >/dev/null
+		echo "$item: switched the open window to layout main"
+	fi
+}
+
+remove_installed() {
+	case $kind in
+	mods) rm -rf "$target" ;;
+	layouts)
+		switch_away
+		rm -f "$target" "$manifest"
+		;;
+	esac
+}
+
+# Stages and checks every item first, so a refusal leaves the app home unchanged.
 cmd_install() {
 	refused=''
 	: >"$tmp/plan"
 	commit=$(jj -R "$repo" log --no-graph -r @ -T commit_id 2>/dev/null) || commit=''
-	for mod in $mods; do
-		classify "$mod"
+	for item in $items; do
+		select_item "$item"
+		classify
 		case $state in
 		foreign)
-			refuse "$mod: foreign ($reason); move it aside to install"
+			refuse "$item: foreign ($reason); move it aside to install"
 			continue
 			;;
 		newer)
 			if [ -z "$force" ]; then
-				refuse "$mod: installed $installed_version is newer than repo $repo_version; --force downgrades"
+				refuse "$item: installed $installed_version is newer than repo $repo_version; --force downgrades"
 				continue
 			fi
 			message="downgraded $installed_version -> $repo_version"
@@ -173,93 +264,95 @@ cmd_install() {
 		esac
 		if [ -n "$edited" ]; then
 			if [ -z "$force" ]; then
-				refuse "$mod: installed files were edited; --force replaces them"
+				refuse "$item: installed files were edited; --force replaces them"
 				continue
 			fi
 			message="$message, replacing local edits"
 		fi
-		stage "$mod"
+		stage
 		if [ "$state" = same ] && [ -z "$edited" ]; then
 			if ! repo_changed; then
-				echo "$mod skip up to date $repo_version" >>"$tmp/plan"
+				echo "$item skip up to date $repo_version" >>"$tmp/plan"
 				continue
 			fi
 			message="$message, repo changed without a version bump"
 		fi
 		if ! check_staged; then
-			refuse "$mod: herdr-app check failed"
+			refuse "$item: herdr-app check failed"
 			continue
 		fi
-		write_manifest "$mod" "$repo_version"
-		echo "$mod copy $message" >>"$tmp/plan"
+		write_manifest
+		echo "$item copy $message" >>"$tmp/plan"
 	done
 	[ -z "$refused" ] || die "nothing was installed"
 
-	mkdir -p "$app_home/mods"
-	while read -r mod action message; do
+	while read -r item action message; do
 		if [ "$action" = copy ]; then
-			rm -rf "$app_home/mods/$mod"
-			cp -R "$tmp/stage/$mod" "$app_home/mods/$mod"
+			select_item "$item"
+			install_staged
 		fi
-		echo "$mod: $message"
+		echo "$item: $message"
 	done <"$tmp/plan"
 }
 
-# Checks every mod first, so a refusal leaves the app home unchanged.
+# Checks every item first, so a refusal leaves the app home unchanged.
 cmd_uninstall() {
 	refused=''
 	: >"$tmp/plan"
-	for mod in $mods; do
-		classify "$mod"
+	for item in $items; do
+		select_item "$item"
+		classify
 		case $state in
 		absent)
-			echo "$mod skip not installed" >>"$tmp/plan"
+			echo "$item skip not installed" >>"$tmp/plan"
 			continue
 			;;
 		foreign)
-			refuse "$mod: foreign ($reason); not removing it"
+			refuse "$item: foreign ($reason); not removing it"
 			continue
 			;;
 		esac
 		message="uninstalled $installed_version"
 		if [ -n "$edited" ]; then
 			if [ -z "$force" ]; then
-				refuse "$mod: installed files were edited; --force removes them"
+				refuse "$item: installed files were edited; --force removes them"
 				continue
 			fi
 			message="$message, removing local edits"
 		fi
-		echo "$mod remove $message" >>"$tmp/plan"
+		echo "$item remove $message" >>"$tmp/plan"
 	done
 	[ -z "$refused" ] || die "nothing was uninstalled"
 
-	while read -r mod action message; do
+	while read -r item action message; do
 		if [ "$action" = remove ]; then
-			rm -rf "$app_home/mods/$mod"
+			select_item "$item"
+			remove_installed
 		fi
-		echo "$mod: $message"
+		echo "$item: $message"
 	done <"$tmp/plan"
 }
 
 cmd_status() {
-	for mod in $mods; do
-		classify "$mod"
+	for item in $items; do
+		select_item "$item"
+		classify
 		case $state in
-		absent) echo "$mod: absent (repo $repo_version)" ;;
-		foreign) echo "$mod: foreign ($reason)" ;;
+		absent) echo "$item: absent (repo $repo_version)" ;;
+		foreign) echo "$item: foreign ($reason)" ;;
 		*)
 			notes=''
 			if [ -n "$edited" ]; then
 				notes=', edited'
 			fi
 			if [ "$state" = same ]; then
-				stage "$mod"
+				stage
 				if repo_changed; then
 					notes="$notes, repo changed without a version bump"
 				fi
-				echo "$mod: same $installed_version$notes"
+				echo "$item: same $installed_version$notes"
 			else
-				echo "$mod: $state $installed_version (repo $repo_version)$notes"
+				echo "$item: $state $installed_version (repo $repo_version)$notes"
 			fi
 			;;
 		esac
@@ -281,8 +374,14 @@ install | uninstall | status) ;;
 esac
 
 app_home=${HERDR_APP_HOME:-$HOME/.config/herdr-app}
-mods=''
 force=''
+mod_items='' layout_items=''
+add_item() {
+	case $1 in
+	mods/*) mod_items="$mod_items $1" ;;
+	layouts/*) layout_items="$layout_items $1" ;;
+	esac
+}
 while [ $# -gt 0 ]; do
 	case $1 in
 	--force) force=1 ;;
@@ -292,29 +391,40 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	-*) die "unknown option: $1" ;;
-	*) mods="$mods $1" ;;
+	*)
+		parse_item "$1"
+		add_item "$parsed"
+		;;
 	esac
 	shift
 done
-
-if [ -z "$mods" ]; then
+if [ -z "$mod_items$layout_items" ]; then
 	for dir in "$repo"/mods/*/; do
 		[ -d "$dir" ] || continue
 		dir=${dir%/}
-		mods="$mods ${dir##*/}"
+		add_item "mods/${dir##*/}"
+	done
+	for file in "$repo"/layouts/*.json; do
+		[ -f "$file" ] || continue
+		file=${file##*/}
+		add_item "layouts/${file%.json}"
 	done
 fi
-for mod in $mods; do
-	case $mod in
-	.* | */*) die "no mod named $mod in mods/" ;;
-	esac
-	[ -d "$repo/mods/$mod" ] || die "no mod named $mod in mods/"
-	read_repo_version "$mod"
-done
-[ -d "$app_home" ] || die "no app home at $app_home"
+# Layouts name mods, so mods go in first and come out last.
+if [ "$command" = uninstall ]; then
+	items="$layout_items $mod_items"
+else
+	items="$mod_items $layout_items"
+fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+for item in $items; do
+	select_item "$item"
+	read_repo_version
+done
+[ -d "$app_home" ] || die "no app home at $app_home"
 
 case $command in
 install) cmd_install ;;
