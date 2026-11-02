@@ -12,7 +12,9 @@ layouts in `layouts/<name>.json`.
   (`jj commit`).
 - **jj-graph**: the `jj log` graph of the focused workspace, in jj's order and
   your `revsets.log`, drawn as colored lanes. A dashed stub marks history the
-  revset leaves out. Right-click a change to edit it,
+  revset leaves out. The field above it takes any revset, applied with Enter
+  and remembered per repo until Herdr restarts; empty means `revsets.log`. It
+  shows at most 500 changes. Right-click a change to edit it,
   start a new change on top, start a new workspace from it, squash it into its
   parent, or abandon it. Squash keeps both descriptions instead of opening an
   editor.

@@ -21,9 +21,13 @@ const FIELDS = [
 
 const START = '{"self":';
 
-export const LOG_ARGS = [
-  ...READ, "log",
-  "-T", FIELDS.map(([key, expr], i) => `"${i ? "," : "{"}\\"${key}\\":" ++ json(${expr})`).join(" ++ ") + ' ++ "}\\n"',
+const TEMPLATE = FIELDS.map(([key, expr], i) => `"${i ? "," : "{"}\\"${key}\\":" ++ json(${expr})`).join(" ++ ") + ' ++ "}\\n"';
+
+// At most `limit` changes in `revset`, or in the person's revsets.log when
+// it's empty. The limit keeps a wide revset under exec's 8 MiB.
+export const LIMIT = 500;
+export const logArgs = (revset = "", limit = LIMIT) => [
+  ...READ, "log", ...(revset ? [`--revisions=${revset}`] : []), `--limit=${limit}`, "-T", TEMPLATE,
 ];
 
 // The changes in jj's order (every child before its parents): { commit,

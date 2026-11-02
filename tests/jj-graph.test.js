@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { addWorkspace, exec, makeRepo, must, removeTempDirs } from "./jj-helpers.js";
-import { LOG_ARGS, parseLog, runAction } from "../mods/jj-graph/graph.js";
+import { logArgs, parseLog, runAction } from "../mods/jj-graph/graph.js";
 import { graphWidth, laneX, layout, segmentPath } from "../mods/jj-graph/lanes.js";
 
 afterEach(removeTempDirs);
@@ -28,7 +28,7 @@ describe("parseLog", () => {
   test("reads each change, its parents and its marks from jj's JSON", () => {
     const { main } = branchedRepo();
 
-    const commits = parseLog(must(LOG_ARGS, main));
+    const commits = parseLog(must(logArgs(), main));
 
     expect(commits.map((c) => c.description)).toEqual(["merge both", "right side", "left work", "base", ""]);
     const [merge, right, left, base, root] = commits;
@@ -45,7 +45,7 @@ describe("parseLog", () => {
     const other = addWorkspace(repo, "other");
     must(["edit", id(repo.main, "@")], other);
 
-    const current = parseLog(must(LOG_ARGS, repo.main)).find((c) => c.current);
+    const current = parseLog(must(logArgs(), repo.main)).find((c) => c.current);
 
     expect(current.workspaces.sort()).toEqual(["default", "other"]);
   });
@@ -57,7 +57,7 @@ describe("parseLog", () => {
     // A workspace made last holds the newest change, which a flat list puts first.
     addWorkspace(repo, "late");
 
-    const commits = parseLog(must(LOG_ARGS, repo.main));
+    const commits = parseLog(must(logArgs(), repo.main));
 
     expect(commits[0].current).toBe(true);
   });
@@ -66,7 +66,21 @@ describe("parseLog", () => {
     const { main } = makeRepo();
     must(["describe", "-m", "Subject\n\nBody"], main);
 
-    expect(parseLog(must(LOG_ARGS, main))[0].description).toBe("Subject");
+    expect(parseLog(must(logArgs(), main))[0].description).toBe("Subject");
+  });
+
+  test("shows the changes a revset names", () => {
+    const { main } = branchedRepo();
+
+    const commits = parseLog(must(logArgs("bookmarks() | root()"), main));
+
+    expect(commits.map((c) => c.description)).toEqual(["left work", ""]);
+  });
+
+  test("shows at most the given number of changes", () => {
+    const { main } = branchedRepo();
+
+    expect(parseLog(must(logArgs("all()", 2), main))).toHaveLength(2);
   });
 
   test("returns no changes for no output", () => {
@@ -89,7 +103,7 @@ describe("layout", () => {
   test("gives a merge's second parent its own lane and joins it back at the fork", () => {
     const { main } = branchedRepo();
 
-    const { rows, width } = layout(parseLog(must(LOG_ARGS, main)));
+    const { rows, width } = layout(parseLog(must(logArgs(), main)));
 
     expect(width).toBe(2);
     expect(rows.map((r) => r.lane)).toEqual([0, 1, 0, 0, 0]);

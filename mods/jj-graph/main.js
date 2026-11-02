@@ -1,6 +1,8 @@
 // jj-graph: the jj log graph of the focused folder's workspace. graph.js reads
 // jj's JSON, lanes.js lays the changes out, and this draws the lanes as paths.
-// Click a change to select it; right-click it for its menu.
+// Click a change to select it; right-click it for its menu. The field above the
+// graph takes a revset, applied with Enter and remembered per repo while the
+// panel runs; empty means the person's revsets.log.
 // Opened as a popup with props { role: "menu", ... }, this mod draws that menu.
 //
 // location() and the panel and menu layouts follow defaults/mods/changes and
@@ -8,10 +10,10 @@
 // licensed under the Apache License, Version 2.0. See LICENSE-Apache-2.0.txt.
 
 import { View, div, PathBuilder } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, v_virtual_list } from "gpui-base";
+import { v_flex, h_flex, Input, InputState, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, props, openOverlay, closeOverlay } from "herdr";
 import { discover } from "./jj-repo.js";
-import { LOG_ARGS, parseLog, runAction } from "./graph.js";
+import { LIMIT, logArgs, parseLog, runAction } from "./graph.js";
 import { graphWidth, laneX, layout, segmentPath } from "./lanes.js";
 
 function location() {
@@ -47,6 +49,16 @@ export default class JjGraph extends View {
       return;
     }
     this.changes = []; this.rows = []; this.lanes = 1; this.width = 0;
+    this.revsets = new Map(); // repo -> the revset typed for it
+    this.revset = "";
+    this.input = InputState.new({ placeholder: "Revset (empty: your revsets.log)" });
+    this.input.on("submit", (_e, cx) => {
+      this.revset = this.input.value().trim();
+      if (this.repo) this.revsets.set(this.repo.main, this.revset);
+      this.refresh(cx);
+    });
+    this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
   }
@@ -78,10 +90,16 @@ export default class JjGraph extends View {
         const repo = await discover(sh, (path) => readTextFile(path, { on }), cwd);
         if (key() !== context) return;
         if (!repo) { this.repo = null; this.changes = []; this.rows = []; this.error = "Not a jj repository."; return; }
-        const r = await sh("jj", LOG_ARGS, repo.top);
+        if (repo.main !== this.repo?.main) {
+          this.revset = this.revsets.get(repo.main) ?? "";
+          this.input.set_value(this.revset);
+        }
+        this.repo = repo; this.on = on;
+        // A revset jj refuses leaves the last good graph up, under its error.
+        const r = await sh("jj", logArgs(this.revset), repo.top);
         if (r.code !== 0) throw new Error(r.stderr.trim() || "jj log failed");
         if (key() !== context) return;
-        this.repo = repo; this.on = on; this.error = null;
+        this.error = null;
         this.changes = parseLog(r.stdout);
         const { rows, width } = layout(this.changes);
         this.rows = rows; this.lanes = width;
@@ -153,12 +171,24 @@ export default class JjGraph extends View {
     if (props()?.role === "menu") return this.renderMenu(cx);
     if (key() !== this.context) this.refresh(cx);
     const t = theme();
+    const note = this.error ? null : !this.changes.length && this.loading ? "Loading…" : this.repo && !this.changes.length ? "No changes in this revset." : null;
     return v_flex().id("jj-graph").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
+      })
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Graph"))
         .when(Boolean(this.repo), (e) => e.child(div().text_size(11).text_color(t.dim).child(this.repo.name))))
+      .child(v_flex().flex_none().px(10).py(6).gap(4).border_b(1).border_color(t.border)
+        .child(div().id("revset").w_full().h(28).px(8).flex().items_center().rounded(6).border_1().border_color(this.typing ? t.accent : t.border)
+          .font_family(mono()).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))
+        // jj points at a revset's mistake with a caret diagram, which needs a monospace font.
+        .when(Boolean(this.error), (e) => e.child(div().font_family(mono()).text_size(11).text_color(t.ansi1).child(this.error)))
+        .when(this.changes.length >= LIMIT, (e) => e.child(div().text_size(11).text_color(t.dim).child(`Showing the first ${LIMIT} changes`))))
       .child(div().flex_1().min_h(0).relative().font_family(mono()).text_size(11.5)
-        .when(Boolean(this.error) || (!this.changes.length && this.loading), (e) => e.child(div().p(12).text_color(t.dim).child(this.error || "Loading…")))
+        .when(Boolean(note), (e) => e.child(div().p(12).text_color(t.dim).child(note)))
         .child(div().id("graph-x").size_full().overflow_x_scrollbar()
           .child(div().w_full().min_w(this.width).h_full().child(v_virtual_list("graph-rows", this.changes.length, rowH(), (i) => this.changes[i].commit,
             (range) => Array.from({ length: range.end - range.start }, (_, n) => this.row(range.start + n, t))).size_full()
