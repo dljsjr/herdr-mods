@@ -2,3 +2,5 @@
 gpui-kit.d.ts
 jsconfig.json
 .DS_Store
+# Track this repo's agent guidance despite a global AGENTS*.md ignore.
+!AGENTS.md
