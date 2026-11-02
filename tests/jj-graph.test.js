@@ -77,6 +77,11 @@ describe("parseLog", () => {
     expect(commits.map((c) => c.description)).toEqual(["left work", ""]);
   });
 
+  test("passes no revset to jj when the field is empty", () => {
+    expect(logArgs("").some((arg) => arg.startsWith("--revisions") || arg === "-r")).toBe(false);
+    expect(logArgs("@")).toContain("--revisions=@");
+  });
+
   test("shows at most the given number of changes", () => {
     const { main } = branchedRepo();
 

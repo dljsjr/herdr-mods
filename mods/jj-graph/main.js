@@ -52,7 +52,7 @@ export default class JjGraph extends View {
     this.revsets = new Map(); // repo -> the revset typed for it
     this.defaults = new Map(); // repo -> its revsets.log
     this.revset = "";
-    this.input = InputState.new({ placeholder: "Revset (empty: your revsets.log)" });
+    this.input = InputState.new({ placeholder: "Revset" });
     this.input.on("submit", (_e, cx) => {
       this.revset = this.input.value().trim();
       if (this.repo) this.revsets.set(this.repo.main, this.revset);
