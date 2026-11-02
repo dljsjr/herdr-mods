@@ -13,7 +13,7 @@ import { View, div, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, Input, InputState, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, props, openOverlay, closeOverlay } from "herdr";
 import { discover } from "./jj-repo.js";
-import { LIMIT, logArgs, parseLog, runAction } from "./graph.js";
+import { LIMIT, defaultRevset, graphEdges, logArgs, parseLog, runAction } from "./graph.js";
 import { graphWidth, laneX, layout, segmentPath } from "./lanes.js";
 
 function location() {
@@ -50,6 +50,7 @@ export default class JjGraph extends View {
     }
     this.changes = []; this.rows = []; this.lanes = 1; this.width = 0;
     this.revsets = new Map(); // repo -> the revset typed for it
+    this.defaults = new Map(); // repo -> its revsets.log
     this.revset = "";
     this.input = InputState.new({ placeholder: "Revset (empty: your revsets.log)" });
     this.input.on("submit", (_e, cx) => {
@@ -99,8 +100,12 @@ export default class JjGraph extends View {
         const r = await sh("jj", logArgs(this.revset), repo.top);
         if (r.code !== 0) throw new Error(r.stderr.trim() || "jj log failed");
         if (key() !== context) return;
+        const parsed = parseLog(r.stdout);
+        if (!this.defaults.has(repo.main)) this.defaults.set(repo.main, await defaultRevset(sh, repo.top));
+        const edges = await graphEdges(sh, repo.top, parsed, this.revset || this.defaults.get(repo.main));
+        if (key() !== context) return;
         this.error = null;
-        this.changes = parseLog(r.stdout);
+        this.changes = parsed.map((c, i) => ({ ...c, edges: edges[i] }));
         const { rows, width } = layout(this.changes);
         this.rows = rows; this.lanes = width;
         this.width = this.graphWidth() + Math.max(300, ...this.changes.map((c) => (12 + c.description.length + c.bookmarks.join(" ").length + c.workspaces.join(" ").length) * 7 + 40));
@@ -135,7 +140,7 @@ export default class JjGraph extends View {
     const paths = new Map();
     for (const segment of row.segments) {
       const [, , , , c, dashed] = segment;
-      const color = dashed ? t.dim : colors[c % colors.length], key = `${color}${dashed ? "-" : ""}`;
+      const color = colors[c % colors.length], key = `${color}${dashed ? "-" : ""}`;
       let p = paths.get(key)?.p ?? (dashed ? PathBuilder.stroke(1.5).dash_array([3, 3]) : PathBuilder.stroke(1.5));
       const { from, to, controls } = segmentPath(segment, this.lanes);
       p = p.move_to(...from);

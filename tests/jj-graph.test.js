@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { addWorkspace, exec, makeRepo, must, removeTempDirs } from "./jj-helpers.js";
-import { logArgs, parseLog, runAction } from "../mods/jj-graph/graph.js";
+import { defaultRevset, graphEdges, logArgs, parseLog, runAction } from "../mods/jj-graph/graph.js";
 import { graphWidth, laneX, layout, segmentPath } from "../mods/jj-graph/lanes.js";
 
 afterEach(removeTempDirs);
@@ -88,8 +88,52 @@ describe("parseLog", () => {
   });
 });
 
+// A main line of changes and, in workspace "tasks", a second lineage started
+// from the root commit: the shape of a repo whose task storage lives on its own
+// line, with no bookmark on either head.
+function twoLineages() {
+  const repo = makeRepo();
+  for (const step of ["m1", "m2", "m3"]) {
+    writeFileSync(join(repo.main, `${step}.txt`), `${step}\n`);
+    must(["commit", "-m", step], repo.main);
+  }
+  const tasks = addWorkspace(repo, "tasks");
+  must(["new", "root()", "-m", "task storage"], tasks);
+  return repo;
+}
+
+describe("graphEdges", () => {
+  test("follows a hidden parent to the nearest change the revset shows", async () => {
+    const { main } = twoLineages();
+    const revset = "@ | root() | tasks@";
+    const changes = parseLog(must(logArgs(revset), main));
+    const by = (description) => changes.findIndex((c) => c.description === description);
+    const root = changes.find((c) => !c.parents.length).commit;
+
+    const edges = await graphEdges(exec, main, changes, revset);
+
+    expect(edges[changes.findIndex((c) => c.current)]).toEqual([{ to: root, elided: true }]);
+    expect(edges[by("task storage")]).toEqual([{ to: root, elided: false }]);
+  });
+
+  test("marks a hidden parent with nothing shown below it", async () => {
+    const { main } = makeRepo();
+
+    const changes = parseLog(must(logArgs("@"), main));
+
+    expect(await graphEdges(exec, main, changes, "@")).toEqual([[{ to: null, elided: true }]]);
+  });
+
+  test("defaultRevset reads revsets.log", async () => {
+    const { main } = makeRepo();
+    must(["config", "set", "--repo", "revsets.log", "@ | root()"], main);
+
+    expect(await defaultRevset(exec, main)).toBe("@ | root()");
+  });
+});
+
 describe("layout", () => {
-  const change = (commit, ...parents) => ({ commit, parents });
+  const change = (commit, ...parents) => ({ commit, edges: parents.map((to) => ({ to, elided: false })) });
 
   test("keeps a straight history in one lane", () => {
     const { rows, width } = layout([change("c", "b"), change("b", "a"), change("a")]);
@@ -102,8 +146,9 @@ describe("layout", () => {
 
   test("gives a merge's second parent its own lane and joins it back at the fork", () => {
     const { main } = branchedRepo();
+    const changes = parseLog(must(logArgs(), main)).map((c) => ({ ...c, edges: c.parents.map((to) => ({ to, elided: false })) }));
 
-    const { rows, width } = layout(parseLog(must(logArgs(), main)));
+    const { rows, width } = layout(changes);
 
     expect(width).toBe(2);
     expect(rows.map((r) => r.lane)).toEqual([0, 1, 0, 0, 0]);
@@ -122,11 +167,28 @@ describe("layout", () => {
     });
   });
 
-  test("ends a line at a parent jj left out with a short dashed stub", () => {
-    const { rows, width } = layout([change("b", "hidden")]);
+  test("ends a line with a short dashed stub when nothing shown lies below", () => {
+    const { rows, width } = layout([{ commit: "b", edges: [{ to: null, elided: true }] }]);
 
     expect(width).toBe(1);
     expect(rows[0].segments).toEqual([[0, 0.5, 0, 1, 0, true]]);
+  });
+
+  test("keeps a lane through elided changes, so a second lineage gets its own", async () => {
+    const { main } = twoLineages();
+    const revset = "@ | root() | tasks@";
+    const parsed = parseLog(must(logArgs(revset), main));
+    const edges = await graphEdges(exec, main, parsed, revset);
+    const changes = parsed.map((c, i) => ({ ...c, edges: edges[i] }));
+    const at = (pick) => changes.findIndex(pick);
+
+    const { rows, width } = layout(changes);
+
+    expect(width).toBe(2);
+    expect(rows[at((c) => c.current)].lane).not.toBe(rows[at((c) => c.description === "task storage")].lane);
+    expect(rows[at((c) => !c.parents.length)].lane).toBe(rows[at((c) => c.current)].lane);
+    expect(rows[at((c) => c.current)].segments).toContainEqual([0, 0.5, 0, 1, 0, true]);
+    expect(rows[at((c) => c.description === "task storage")].segments).toContainEqual([0, 0, 0, 1, 0, true]);
   });
 });
 

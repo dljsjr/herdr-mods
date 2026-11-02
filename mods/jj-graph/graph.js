@@ -41,6 +41,42 @@ export function parseLog(text) {
   });
 }
 
+// The revset jj log shows when given none.
+export async function defaultRevset(exec, cwd) {
+  const r = await exec("jj", ["config", "get", "revsets.log"], cwd);
+  return r.code === 0 ? r.stdout.trim() : "";
+}
+
+// Asking jj about more hidden parents than this would slow every refresh;
+// past it, they end in stubs.
+const MAX_HIDDEN = 100;
+
+// The lines to draw from each change, as [{ to, elided }]: to each parent the
+// log shows, and for a parent the revset hides, to the nearest shown changes
+// it descends from. jj draws those as one line through "(elided revisions)",
+// and they are what keep separate lineages in separate lanes. A hidden parent
+// with nothing shown below it gets { to: null }, a stub.
+export async function graphEdges(exec, cwd, changes, revset) {
+  const shown = new Set(changes.map((c) => c.commit));
+  const hidden = [...new Set(changes.flatMap((c) => c.parents.filter((p) => !shown.has(p))))];
+  const below = new Map(revset && hidden.length <= MAX_HIDDEN ? await Promise.all(hidden.map(async (parent) => {
+    const r = await exec("jj", [...READ, "log", "--no-graph", `--revisions=heads(::${parent} & (${revset}))`, "-T", 'commit_id ++ "\\n"'], cwd);
+    return [parent, r.code === 0 ? r.stdout.split("\n").filter((id) => shown.has(id)) : []];
+  })) : []);
+  return changes.map((c) => {
+    const edges = [];
+    for (const parent of c.parents) {
+      if (shown.has(parent)) edges.push({ to: parent, elided: false });
+      else {
+        const found = below.get(parent) ?? [];
+        if (!found.length) edges.push({ to: null, elided: true });
+        for (const to of found) if (!edges.some((e) => e.to === to)) edges.push({ to, elided: true });
+      }
+    }
+    return edges;
+  });
+}
+
 async function jj(exec, args, cwd) {
   const r = await exec("jj", args, cwd);
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim() || `jj ${args[0]} failed`);
