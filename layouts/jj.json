@@ -29,7 +29,7 @@
               "id": "spaces",
               "type": "block",
               "content": {
-                "mod": "spaces"
+                "mod": "jj-spaces"
               },
               "size": {
                 "weight": 1
@@ -79,7 +79,7 @@
           "id": "tabs",
           "type": "block",
           "content": {
-            "mod": "tabs"
+            "mod": "jj-tabs"
           },
           "size": {
             "px": 42

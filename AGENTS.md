@@ -16,7 +16,11 @@ Every mod has a `VERSION` file holding `MAJOR.MINOR.PATCH`, and every layout has
 
 `layouts/jj.json` is a `layout.clone` of `main` with one change. To change it, edit that file directly; don't regenerate it from a newer `main` unless that's the task.
 
-Tools are pinned in `mise.toml`. Run `mise run test` (bun test) and `mise run lint` (shellcheck) after changing `install.sh`.
+Tools are pinned in `mise.toml`. Run `mise run test` (bun test) and `mise run lint` (shellcheck) after changing `install.sh` or any mod's jj code.
+
+A mod cannot import from outside its own folder (`herdr-app check` rejects it). Code shared by the jj mods lives in `jj-repo.js`, copied into each mod that needs it; `tests/shared.test.js` fails when the copies differ. Keep jj commands and output parsing in plain modules with no Herdr imports, and test them against real jj repos.
+
+Tests run jj with `tests/jj-config.toml`, not the person's config: their watchman snapshot trigger would race the tests and leave watches on deleted folders. `Bun.spawnSync` keeps the environment the process started with, so every spawn in the tests passes `{ env: process.env }`. Register `afterEach(removeTempDirs)` in each test file that uses `tests/jj-helpers.js`.
 
 ## Test in a scratch window, never the live app
 
