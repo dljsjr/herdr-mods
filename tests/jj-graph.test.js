@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { addWorkspace, exec, makeRepo, must, removeTempDirs } from "./jj-helpers.js";
 import { LOG_ARGS, parseLog, runAction } from "../mods/jj-graph/graph.js";
-import { layout } from "../mods/jj-graph/lanes.js";
+import { graphWidth, laneX, layout, segmentPath } from "../mods/jj-graph/lanes.js";
 
 afterEach(removeTempDirs);
 
@@ -96,6 +96,16 @@ describe("layout", () => {
     expect(rows[0].segments).toContainEqual([0, 0.5, 1, 1, 1, false]);
     expect(rows[3].segments).toContainEqual([1, 0, 0, 0.5, 1, false]);
     expect(rows[4].segments.every(([from, , to]) => from === 0 && to === 0)).toBe(true);
+  });
+
+  test("places a segment in percent of the graph cell, ending on the nodes' centers", () => {
+    const lanes = 3, width = graphWidth(lanes);
+    const percent = (lane) => `${(laneX(lane) / width) * 100}%`;
+
+    expect(segmentPath([0, 0, 0, 1], lanes)).toEqual({ from: [percent(0), "0%"], to: [percent(0), "100%"] });
+    expect(segmentPath([1, 0.5, 2, 1], lanes)).toEqual({
+      from: [percent(1), "50%"], to: [percent(2), "100%"], controls: [[percent(1), "75%"], [percent(2), "75%"]],
+    });
   });
 
   test("ends a line at a parent jj left out with a short dashed stub", () => {

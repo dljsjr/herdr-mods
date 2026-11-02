@@ -43,3 +43,19 @@ export function layout(changes) {
   });
   return { rows, width };
 }
+
+// Where lanes sit in a row's graph cell, in the units an element's w() takes.
+export const LANE = 14, PAD = 8;
+export const laneX = (lane) => PAD + lane * LANE + LANE / 2;
+export const graphWidth = (lanes) => PAD * 2 + lanes * LANE;
+
+// A segment's path points as percentages of the graph cell. paint_path takes
+// pixels, which the window's zoom doesn't scale the way it scales elements, so
+// percentages are what keep the lines on the nodes. A bend gets two control
+// points halfway down, so it leaves and arrives vertically.
+export function segmentPath([a, ya, b, yb], lanes) {
+  const w = graphWidth(lanes), x = (lane) => `${(laneX(lane) / w) * 100}%`, y = (v) => `${v * 100}%`;
+  if (a === b) return { from: [x(a), y(ya)], to: [x(b), y(yb)] };
+  const mid = (ya + yb) / 2;
+  return { from: [x(a), y(ya)], to: [x(b), y(yb)], controls: [[x(a), y(mid)], [x(b), y(mid)]] };
+}

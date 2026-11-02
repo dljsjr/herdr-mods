@@ -38,6 +38,8 @@ Do not set `XDG_STATE_HOME`. Shells in the scratch window inherit it and leave s
 
 In a `v_virtual_list`, the row renderer can't attach handlers: `on_click` and the rest throw there, and the list draws nothing, without an error in `herdr-app status`. Use the list's `on_item_click` and `on_item_secondary_click`, which get the row's key.
 
+For `window.paint_path`, give `PathBuilder` coordinates as percentages of the painted bounds. Pixel coordinates don't scale with Herdr's zoom the way element sizes do, so lines drift off the elements they should meet.
+
 After every mod change, run `herdr-app check <mod folder>`. Then install it into the scratch app home, run `status` and `shot` against the scratch window, and look at the picture.
 
 ## Internal context

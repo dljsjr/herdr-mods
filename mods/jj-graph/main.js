@@ -12,7 +12,7 @@ import { v_flex, h_flex, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, props, openOverlay, closeOverlay } from "herdr";
 import { discover } from "./jj-repo.js";
 import { LOG_ARGS, parseLog, runAction } from "./graph.js";
-import { layout } from "./lanes.js";
+import { graphWidth, laneX, layout, segmentPath } from "./lanes.js";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -23,7 +23,7 @@ function location() {
 const key = () => { const { cwd, on } = location(); return JSON.stringify([cwd, on]); };
 const shell = (on) => (command, args, cwd) => exec(command, args, { cwd, on });
 const mono = () => settings().font_family ?? "JetBrains Mono";
-const ROW = 22, LANE = 14, PAD = 8;
+const ROW = 22;
 const zoom = () => settings().zoom ?? 1;
 // A row is a whole number of screen pixels, or lines show hairline gaps
 // between rows; rowH is that height in the units h() takes (zoom scales it).
@@ -100,7 +100,7 @@ export default class JjGraph extends View {
   }
 
   graphWidth() {
-    return PAD * 2 + this.lanes * LANE;
+    return graphWidth(this.lanes);
   }
 
   openMenu(row) {
@@ -113,20 +113,19 @@ export default class JjGraph extends View {
 
   // The lanes through one row: one stroked path per color, and the change's node.
   graphCell(row, change, t) {
-    const z = zoom(), h = rowH(), colors = laneColors(t);
-    const x = (lane) => PAD + lane * LANE + LANE / 2;
+    const h = rowH(), colors = laneColors(t);
     const paths = new Map();
-    // Elements scale with the zoom, but paint_path takes raw pixels.
-    for (const [a, ya, b, yb, c, dashed] of row.segments) {
+    for (const segment of row.segments) {
+      const [, , , , c, dashed] = segment;
       const color = dashed ? t.dim : colors[c % colors.length], key = `${color}${dashed ? "-" : ""}`;
-      let p = paths.get(key)?.p ?? (dashed ? PathBuilder.stroke(1.5 * z).dash_array([3 * z, 3 * z]) : PathBuilder.stroke(1.5 * z));
-      p = p.move_to(x(a) * z, ya * h * z);
-      if (a === b) p = p.line_to(x(b) * z, yb * h * z);
-      else { const mid = ((ya + yb) / 2) * h * z; p = p.cubic_bezier_to(x(b) * z, yb * h * z, x(a) * z, mid, x(b) * z, mid); }
+      let p = paths.get(key)?.p ?? (dashed ? PathBuilder.stroke(1.5).dash_array([3, 3]) : PathBuilder.stroke(1.5));
+      const { from, to, controls } = segmentPath(segment, this.lanes);
+      p = p.move_to(...from);
+      p = controls ? p.cubic_bezier_to(...to, ...controls[0], ...controls[1]) : p.line_to(...to);
       paths.set(key, { p, color });
     }
     const size = change.current ? 10 : 8;
-    const node = div().absolute().left(x(row.lane) - size / 2).top(h / 2 - size / 2).size(size);
+    const node = div().absolute().left(laneX(row.lane) - size / 2).top(h / 2 - size / 2).size(size);
     return div().relative().flex_none().w(this.graphWidth()).h(h).overflow_hidden()
       .children([...paths.values()].map(({ p, color }) => window.paint_path(p.build(), color).absolute().top(0).left(0).size_full()))
       .child(change.current ? node.rounded(5).bg(t.background).border(2).border_color(t.ansi2)
