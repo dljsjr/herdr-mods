@@ -22,11 +22,16 @@ async function rootOf(exec, repo, name) {
 // Every workspace of the repo, the main one first:
 // { name, change, description, root, available, main }.
 export async function listWorkspaces(exec, repo) {
+  // jj keeps the folder each workspace was made in, which can be stale after a
+  // move. The folders discover() found are current, so they win for the
+  // workspaces checked out there.
+  const found = new Map([[await currentName(exec, repo), repo.top]]);
+  if (repo.linked) found.set(await currentName(exec, { ...repo, top: repo.main }), repo.main);
   const out = [];
   for (const line of (await jj(exec, [...READ, "workspace", "list", "-T", LIST_TEMPLATE], repo.main)).split("\n")) {
     if (!line) continue;
     const [name, change, description] = line.split(SEP);
-    const root = await rootOf(exec, repo, name);
+    const root = found.get(name) ?? await rootOf(exec, repo, name);
     out.push({ name, change, description, root, available: Boolean(root) && await exists(exec, root, repo.main, "-d"), main: root === repo.main });
   }
   return out.sort((a, b) => b.main - a.main || a.name.localeCompare(b.name));

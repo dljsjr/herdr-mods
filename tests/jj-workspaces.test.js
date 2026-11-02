@@ -53,6 +53,23 @@ describe("listWorkspaces", () => {
     expect(list[1].change).toMatch(/^[k-z]+$/);
   });
 
+  // jj keeps the folder a workspace was made in. Some repos keep an absolute
+  // path that has since moved (seen in a real repo: /Users/<old name>/...),
+  // which real jj can't be made to write here, so only that answer is faked.
+  test("trusts the folders it found over jj's stale records for them", async () => {
+    const repo = makeRepo();
+    const feat = addWorkspace(repo, "feat");
+    const stale = async (command, args, cwd) =>
+      command === "jj" && args.some((a) => a.startsWith("--name=")) ? { code: 0, stdout: "/Users/old/place\n", stderr: "" } : exec(command, args, cwd);
+
+    const list = await listWorkspaces(stale, await found(feat));
+
+    expect(list.map(({ name, root, available, main }) => ({ name, root, available, main }))).toEqual([
+      { name: "default", root: repo.main, available: true, main: true },
+      { name: "feat", root: feat, available: true, main: false },
+    ]);
+  });
+
   test("currentName names the workspace a checkout belongs to", async () => {
     const repo = makeRepo();
     const feat = addWorkspace(repo, "feat");
