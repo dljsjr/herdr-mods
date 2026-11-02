@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { addWorkspace, exec, makeRepo, must, removeTempDirs } from "./jj-helpers.js";
 import { LOG_ARGS, parseLog, runAction } from "../mods/jj-graph/graph.js";
+import { layout } from "../mods/jj-graph/lanes.js";
 
 afterEach(removeTempDirs);
 
@@ -24,21 +25,19 @@ function branchedRepo() {
 }
 
 describe("parseLog", () => {
-  test("splits jj's graph from each change's fields", () => {
+  test("reads each change, its parents and its marks from jj's JSON", () => {
     const { main } = branchedRepo();
 
-    const rows = parseLog(must(LOG_ARGS, main));
-    const nodes = rows.filter((r) => r.commit);
+    const commits = parseLog(must(LOG_ARGS, main));
 
-    expect(nodes.map((n) => n.description)).toEqual(["merge both", "right side", "left work", "base", ""]);
-    // jj names working copies only when a repo has more than one workspace.
-    expect(nodes[0]).toMatchObject({ current: true, workspaces: [], empty: true, immutable: false, conflict: false });
-    expect(nodes[0].graph.trimEnd()).toBe("@");
-    expect(nodes[2].bookmarks).toEqual(["feat"]);
-    expect(nodes[4]).toMatchObject({ immutable: true, current: false });
-    expect(nodes[1].commit).toBe(id(main, 'description(glob:"right side*")'));
-    expect(`${nodes[1].change.prefix}${nodes[1].change.rest}`).toBe(id(main, nodes[1].commit, "change_id.shortest(8)"));
-    expect(rows.some((r) => !r.commit && r.graph.trim())).toBe(true);
+    expect(commits.map((c) => c.description)).toEqual(["merge both", "right side", "left work", "base", ""]);
+    const [merge, right, left, base, root] = commits;
+    expect(merge.parents).toEqual([left.commit, right.commit]);
+    expect(merge).toMatchObject({ current: true, empty: true, immutable: false, conflict: false });
+    expect(left.bookmarks).toEqual(["feat"]);
+    expect(base.parents).toEqual([root.commit]);
+    expect(root).toMatchObject({ immutable: true, current: false, parents: [] });
+    expect(`${right.change.prefix}${right.change.rest}`).toBe(id(main, right.commit, "change_id.shortest(8)"));
   });
 
   test("lists every workspace whose working copy sits on a change", () => {
@@ -46,13 +45,64 @@ describe("parseLog", () => {
     const other = addWorkspace(repo, "other");
     must(["edit", id(repo.main, "@")], other);
 
-    const current = parseLog(must(LOG_ARGS, repo.main)).find((r) => r.current);
+    const current = parseLog(must(LOG_ARGS, repo.main)).find((c) => c.current);
 
     expect(current.workspaces.sort()).toEqual(["default", "other"]);
   });
 
-  test("returns no rows for no output", () => {
+  test("follows the order of jj's graph, not commit time", () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo.main, "b.txt"), "b\n");
+    must(["commit", "-m", "second"], repo.main);
+    // A workspace made last holds the newest change, which a flat list puts first.
+    addWorkspace(repo, "late");
+
+    const commits = parseLog(must(LOG_ARGS, repo.main));
+
+    expect(commits[0].current).toBe(true);
+  });
+
+  test("keeps only a description's first line", () => {
+    const { main } = makeRepo();
+    must(["describe", "-m", "Subject\n\nBody"], main);
+
+    expect(parseLog(must(LOG_ARGS, main))[0].description).toBe("Subject");
+  });
+
+  test("returns no changes for no output", () => {
     expect(parseLog("")).toEqual([]);
+  });
+});
+
+describe("layout", () => {
+  const change = (commit, ...parents) => ({ commit, parents });
+
+  test("keeps a straight history in one lane", () => {
+    const { rows, width } = layout([change("c", "b"), change("b", "a"), change("a")]);
+
+    expect(width).toBe(1);
+    expect(rows.map((r) => r.lane)).toEqual([0, 0, 0]);
+    expect(rows[1].segments).toEqual([[0, 0, 0, 0.5, 0, false], [0, 0.5, 0, 1, 0, false]]);
+    expect(rows[2].segments).toEqual([[0, 0, 0, 0.5, 0, false]]);
+  });
+
+  test("gives a merge's second parent its own lane and joins it back at the fork", () => {
+    const { main } = branchedRepo();
+
+    const { rows, width } = layout(parseLog(must(LOG_ARGS, main)));
+
+    expect(width).toBe(2);
+    expect(rows.map((r) => r.lane)).toEqual([0, 1, 0, 0, 0]);
+    expect(rows[0].segments).toContainEqual([0, 0.5, 1, 1, 1, false]);
+    expect(rows[3].segments).toContainEqual([1, 0, 0, 0.5, 1, false]);
+    expect(rows[4].segments.every(([from, , to]) => from === 0 && to === 0)).toBe(true);
+  });
+
+  test("ends a line at a parent jj left out with a short dashed stub", () => {
+    const { rows, width } = layout([change("b", "hidden")]);
+
+    expect(width).toBe(1);
+    expect(rows[0].segments).toEqual([[0, 0.5, 0, 1, 0, true]]);
   });
 });
 

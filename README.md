@@ -10,8 +10,9 @@ layouts in `layouts/<name>.json`.
   against its parent, and its message box starts with the description of `@`.
   **Describe** sets that description; the arrow beside it offers **Commit**
   (`jj commit`).
-- **jj-graph**: the `jj log` graph of the focused workspace, drawn by jj itself
-  (your `ui.graph.style` and `revsets.log`). Right-click a change to edit it,
+- **jj-graph**: the `jj log` graph of the focused workspace, in jj's order and
+  your `revsets.log`, drawn as colored lanes. A dashed stub marks history the
+  revset leaves out. Right-click a change to edit it,
   start a new change on top, start a new workspace from it, squash it into its
   parent, or abandon it. Squash keeps both descriptions instead of opening an
   editor.

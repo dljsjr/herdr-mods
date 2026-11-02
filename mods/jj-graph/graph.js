@@ -1,35 +1,39 @@
-// jj log for the jj-graph panel: jj draws the graph (with the person's
-// ui.graph.style and revsets.log), and a separator marks where each change's
-// fields start, so the panel only styles them. No Herdr imports.
+// jj log for the jj-graph panel: one JSON object per change, json(self) plus
+// what the panel marks, so lanes.js can lay the graph out and the panel can
+// draw it. No Herdr imports.
+//
+// jj still draws its graph here, and only the JSON on each change's line is
+// read: with --no-graph jj lists changes by commit time, while its graph
+// keeps branches together and @ on top.
 import { READ } from "./jj-repo.js";
 
-const SEP = "\x1f";
 const FIELDS = [
-  "change_id.shortest(8).prefix()", "change_id.shortest(8).rest()", "commit_id",
-  'local_bookmarks.map(|b| b.name()).join(" ")', "working_copies",
-  'if(current_working_copy, "1")', 'if(empty, "1")', 'if(conflict, "1")', 'if(immutable, "1")',
-  "description.first_line()",
+  ["self", "self"],
+  ["prefix", "change_id.shortest(8).prefix()"],
+  ["rest", "change_id.shortest(8).rest()"],
+  ["bookmarks", "local_bookmarks.map(|b| b.name())"],
+  ["workspaces", "working_copies.map(|w| w.name())"],
+  ["current", "current_working_copy"],
+  ["empty", "empty"],
+  ["conflict", "conflict"],
+  ["immutable", "immutable"],
 ];
 
-export const LOG_ARGS = [...READ, "log", "-T", `"\\x1f" ++ ${FIELDS.join(' ++ "\\x1f" ++ ')} ++ "\\n"`];
+const START = '{"self":';
 
-const words = (text) => text.split(" ").filter(Boolean);
+export const LOG_ARGS = [
+  ...READ, "log",
+  "-T", FIELDS.map(([key, expr], i) => `"${i ? "," : "{"}\\"${key}\\":" ++ json(${expr})`).join(" ++ ") + ' ++ "}\\n"',
+];
 
-// One row per output line: { graph } for lines that are only graph, or
-// { graph, change: { prefix, rest }, commit, bookmarks, workspaces, current,
-// empty, conflict, immutable, description } for a change.
+// The changes in jj's order (every child before its parents): { commit,
+// parents, change: { prefix, rest }, description (first line), bookmarks,
+// workspaces, current, empty, conflict, immutable }.
 export function parseLog(text) {
-  if (!text) return [];
-  return text.replace(/\n$/, "").split("\n").map((line) => {
-    const at = line.indexOf(SEP);
-    if (at < 0) return { graph: line };
-    const [prefix, rest, commit, bookmarks, workspaces, current, empty, conflict, immutable, description] = line.slice(at + 1).split(SEP);
-    return {
-      graph: line.slice(0, at), change: { prefix, rest }, commit,
-      bookmarks: words(bookmarks), workspaces: words(workspaces).map((w) => w.replace(/@$/, "")),
-      current: current === "1", empty: empty === "1", conflict: conflict === "1", immutable: immutable === "1",
-      description,
-    };
+  return text.split("\n").filter((line) => line.includes(START)).map((line) => {
+    // Graph characters never include "{", and JSON escapes any quote in a description.
+    const { self, prefix, rest, ...marks } = JSON.parse(line.slice(line.indexOf(START)));
+    return { commit: self.commit_id, parents: self.parents, change: { prefix, rest }, description: self.description.split("\n")[0], ...marks };
   });
 }
 

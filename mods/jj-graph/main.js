@@ -1,16 +1,18 @@
-// jj-graph: the jj log graph of the focused folder's workspace, drawn by jj
-// itself (graph.js). Click a change to select it; right-click it for its menu.
+// jj-graph: the jj log graph of the focused folder's workspace. graph.js reads
+// jj's JSON, lanes.js lays the changes out, and this draws the lanes as paths.
+// Click a change to select it; right-click it for its menu.
 // Opened as a popup with props { role: "menu", ... }, this mod draws that menu.
 //
 // location() and the panel and menu layouts follow defaults/mods/changes and
 // defaults/mods/menu in herdr-app 0.1.12 (https://github.com/herdrdev/herdr-app),
 // licensed under the Apache License, Version 2.0. See LICENSE-Apache-2.0.txt.
 
-import { View, div } from "gpui-kit";
+import { View, div, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, props, openOverlay, closeOverlay } from "herdr";
 import { discover } from "./jj-repo.js";
 import { LOG_ARGS, parseLog, runAction } from "./graph.js";
+import { layout } from "./lanes.js";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -20,8 +22,13 @@ function location() {
 }
 const key = () => { const { cwd, on } = location(); return JSON.stringify([cwd, on]); };
 const shell = (on) => (command, args, cwd) => exec(command, args, { cwd, on });
-const NODES = "@○◆×◉●◇";
 const mono = () => settings().font_family ?? "JetBrains Mono";
+const ROW = 22, LANE = 14, PAD = 8;
+const zoom = () => settings().zoom ?? 1;
+// A row is a whole number of screen pixels, or lines show hairline gaps
+// between rows; rowH is that height in the units h() takes (zoom scales it).
+const rowH = () => Math.max(1, Math.round(ROW * zoom())) / zoom();
+const laneColors = (t) => [t.ansi4, t.ansi5, t.ansi6, t.ansi3, t.ansi2, t.ansi1];
 
 const MENU = [
   ["Edit", "edit", (p) => !p.immutable && !p.current],
@@ -39,7 +46,7 @@ export default class JjGraph extends View {
       this.handle.focus();
       return;
     }
-    this.rows = []; this.width = 0;
+    this.changes = []; this.rows = []; this.lanes = 1; this.width = 0;
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
   }
@@ -61,7 +68,7 @@ export default class JjGraph extends View {
     if (this.loading) { this.pending = true; return; }
     const { cwd, on } = location(), context = key();
     if (context !== this.context) {
-      this.context = context; this.repo = null; this.rows = []; this.width = 0; this.selected = null; this.error = null; this.watched = null;
+      this.context = context; this.repo = null; this.changes = []; this.rows = []; this.lanes = 1; this.width = 0; this.selected = null; this.error = null; this.watched = null;
     }
     if (!cwd) return;
     this.loading = true; this.pending = false;
@@ -70,13 +77,15 @@ export default class JjGraph extends View {
         const sh = shell(on);
         const repo = await discover(sh, (path) => readTextFile(path, { on }), cwd);
         if (key() !== context) return;
-        if (!repo) { this.repo = null; this.rows = []; this.error = "Not a jj repository."; return; }
+        if (!repo) { this.repo = null; this.changes = []; this.rows = []; this.error = "Not a jj repository."; return; }
         const r = await sh("jj", LOG_ARGS, repo.top);
         if (r.code !== 0) throw new Error(r.stderr.trim() || "jj log failed");
         if (key() !== context) return;
         this.repo = repo; this.on = on; this.error = null;
-        this.rows = parseLog(r.stdout);
-        this.width = Math.max(300, ...this.rows.map((row) => (row.graph.length + (row.commit ? 30 + row.description.length + row.bookmarks.join(" ").length : 0)) * 7 + 40));
+        this.changes = parseLog(r.stdout);
+        const { rows, width } = layout(this.changes);
+        this.rows = rows; this.lanes = width;
+        this.width = this.graphWidth() + Math.max(300, ...this.changes.map((c) => (12 + c.description.length + c.bookmarks.join(" ").length + c.workspaces.join(" ").length) * 7 + 40));
         this.watch(`${repo.main}/.jj/repo/op_heads`, cx);
       } catch (e) { if (key() === context) this.error = String(e.message ?? e); }
       finally {
@@ -87,7 +96,11 @@ export default class JjGraph extends View {
   }
 
   byCommit(commit) {
-    return this.rows.find((r) => r.commit === commit);
+    return this.changes.find((c) => c.commit === commit);
+  }
+
+  graphWidth() {
+    return PAD * 2 + this.lanes * LANE;
   }
 
   openMenu(row) {
@@ -98,30 +111,43 @@ export default class JjGraph extends View {
     });
   }
 
-  graph(row, t) {
-    const at = row.commit ? [...row.graph].findIndex((c) => NODES.includes(c)) : -1;
-    if (at < 0) return div().flex_none().text_color(t.dim).child(row.graph);
-    const chars = [...row.graph];
-    const node = chars[at];
-    return h_flex().flex_none()
-      .child(div().text_color(t.dim).child(chars.slice(0, at).join("")))
-      .child(div().text_color(node === "@" ? t.ansi2 : node === "×" ? t.ansi1 : node === "◆" ? t.dim : t.foreground).child(node))
-      .child(div().text_color(t.dim).child(chars.slice(at + 1).join("")));
+  // The lanes through one row: one stroked path per color, and the change's node.
+  graphCell(row, change, t) {
+    const z = zoom(), h = rowH(), colors = laneColors(t);
+    const x = (lane) => PAD + lane * LANE + LANE / 2;
+    const paths = new Map();
+    // Elements scale with the zoom, but paint_path takes raw pixels.
+    for (const [a, ya, b, yb, c, dashed] of row.segments) {
+      const color = dashed ? t.dim : colors[c % colors.length], key = `${color}${dashed ? "-" : ""}`;
+      let p = paths.get(key)?.p ?? (dashed ? PathBuilder.stroke(1.5 * z).dash_array([3 * z, 3 * z]) : PathBuilder.stroke(1.5 * z));
+      p = p.move_to(x(a) * z, ya * h * z);
+      if (a === b) p = p.line_to(x(b) * z, yb * h * z);
+      else { const mid = ((ya + yb) / 2) * h * z; p = p.cubic_bezier_to(x(b) * z, yb * h * z, x(a) * z, mid, x(b) * z, mid); }
+      paths.set(key, { p, color });
+    }
+    const size = change.current ? 10 : 8;
+    const node = div().absolute().left(x(row.lane) - size / 2).top(h / 2 - size / 2).size(size);
+    return div().relative().flex_none().w(this.graphWidth()).h(h).overflow_hidden()
+      .children([...paths.values()].map(({ p, color }) => window.paint_path(p.build(), color).absolute().top(0).left(0).size_full()))
+      .child(change.current ? node.rounded(5).bg(t.background).border(2).border_color(t.ansi2)
+        : change.conflict ? node.rounded(4).bg(t.ansi1)
+        : change.immutable ? node.rounded(1).bg(t.dim)
+        : node.rounded(4).bg(colors[row.lane % colors.length]));
   }
 
   // Rows can't carry handlers: the list's on_item_click and
   // on_item_secondary_click get the row's key, which is its commit id.
-  row(row, t) {
-    const line = h_flex().w_full().h(20).flex_none().px(10).items_center().child(this.graph(row, t));
-    if (!row.commit) return line;
-    return line.gap(6).cursor_pointer().rounded(4)
-      .when(this.selected === row.commit, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
-      .child(h_flex().flex_none().child(div().font_bold().text_color(t.ansi5).child(row.change.prefix)).child(div().text_color(t.dim).child(row.change.rest)))
-      .children(row.bookmarks.map((b) => div().flex_none().text_color(t.ansi4).child(b)))
-      .children(row.workspaces.map((w) => div().flex_none().text_color(t.ansi2).child(`${w}@`)))
-      .when(row.conflict, (e) => e.child(div().flex_none().text_color(t.ansi1).child("(conflict)")))
-      .when(row.empty, (e) => e.child(div().flex_none().text_color(t.ansi2).child("(empty)")))
-      .child(div().flex_none().text_color(row.description ? t.foreground : t.ansi3).child(row.description || "(no description set)"));
+  row(i, t) {
+    const change = this.changes[i];
+    return h_flex().w_full().h(rowH()).flex_none().pr(10).gap(6).items_center().cursor_pointer()
+      .when(this.selected === change.commit, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
+      .child(this.graphCell(this.rows[i], change, t))
+      .child(h_flex().flex_none().child(div().font_bold().text_color(t.ansi5).child(change.change.prefix)).child(div().text_color(t.dim).child(change.change.rest)))
+      .children(change.bookmarks.map((b) => div().flex_none().text_color(t.ansi4).child(b)))
+      .children(change.workspaces.map((w) => div().flex_none().text_color(t.ansi2).child(`${w}@`)))
+      .when(change.conflict, (e) => e.child(div().flex_none().text_color(t.ansi1).child("(conflict)")))
+      .when(change.empty, (e) => e.child(div().flex_none().text_color(t.ansi2).child("(empty)")))
+      .child(div().flex_none().text_color(change.description ? t.foreground : t.ansi3).child(change.description || "(no description set)"));
   }
 
   render(cx) {
@@ -133,10 +159,10 @@ export default class JjGraph extends View {
         .child(div().font_semibold().child("Graph"))
         .when(Boolean(this.repo), (e) => e.child(div().text_size(11).text_color(t.dim).child(this.repo.name))))
       .child(div().flex_1().min_h(0).relative().font_family(mono()).text_size(11.5)
-        .when(Boolean(this.error) || (!this.rows.length && this.loading), (e) => e.child(div().p(12).text_color(t.dim).child(this.error || "Loading…")))
+        .when(Boolean(this.error) || (!this.changes.length && this.loading), (e) => e.child(div().p(12).text_color(t.dim).child(this.error || "Loading…")))
         .child(div().id("graph-x").size_full().overflow_x_scrollbar()
-          .child(div().w_full().min_w(this.width).h_full().child(v_virtual_list("graph-rows", this.rows.length, 20, (i) => this.rows[i]?.commit ?? `line-${i}`,
-            (range) => this.rows.slice(range.start, range.end).map((row) => this.row(row, t))).size_full()
+          .child(div().w_full().min_w(this.width).h_full().child(v_virtual_list("graph-rows", this.changes.length, rowH(), (i) => this.changes[i].commit,
+            (range) => Array.from({ length: range.end - range.start }, (_, n) => this.row(range.start + n, t))).size_full()
             .on_item_click((key, cx) => { if (this.byCommit(key)) { this.selected = key; cx.notify(); } })
             .on_item_secondary_click((key, _e, cx) => {
               const row = this.byCommit(key);
