@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 function run(cwd, args) {
-  const result = Bun.spawnSync(["jj", ...args], { cwd });
+  const result = Bun.spawnSync(["jj", ...args], { cwd, env: process.env });
   return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
 

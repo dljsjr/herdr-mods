@@ -1,0 +1,5 @@
+# Tests run jj with this config instead of the person's, so a watchman
+# snapshot trigger doesn't race them or outlive their temporary repos.
+user.name = "herdr-mods tests"
+user.email = "tests@herdr-mods.invalid"
+fsmonitor.backend = "none"

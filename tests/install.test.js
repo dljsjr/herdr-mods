@@ -48,7 +48,7 @@ function writeLayout(repo, name, { version = "0.1.0", mod = "demo" } = {}) {
 }
 
 function run(repo, ...args) {
-  const result = Bun.spawnSync(["sh", join(repo, "install.sh"), ...args]);
+  const result = Bun.spawnSync(["sh", join(repo, "install.sh"), ...args], { env: process.env });
   return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
 
@@ -77,8 +77,8 @@ describe("install", () => {
   test("records the jj commit it installed from", () => {
     const repo = makeRepo();
     const home = tempDir("herdr-app-home-");
-    Bun.spawnSync(["jj", "git", "init", repo]);
-    const jj = (...args) => Bun.spawnSync(["jj", "-R", repo, ...args]).stdout.toString();
+    Bun.spawnSync(["jj", "git", "init", repo], { env: process.env });
+    const jj = (...args) => Bun.spawnSync(["jj", "-R", repo, ...args], { env: process.env }).stdout.toString();
 
     run(repo, "install", "--app-home", home);
 
