@@ -4,6 +4,18 @@ Personal mods for the [Herdr](https://herdr.dev) desktop app. The layout mirrors
 the app home (`~/.config/herdr-app`): mods live in `mods/<name>/`, layouts in
 `layouts/<name>.json`.
 
+## Mods
+
+- **jj-changes**: the Changes panel for jj repos. It shows the diff of `@`
+  against its parent, and its message box starts with the description of `@`.
+  **Describe** sets that description; the arrow beside it offers **Commit**
+  (`jj commit`). Until a layout puts it in place of the Changes panel, open it
+  beside the focused pane:
+
+  ```sh
+  herdr-app do pane.split '{"mod":"jj-changes","direction":"right"}'
+  ```
+
 ## Install
 
 ```sh
