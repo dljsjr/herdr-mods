@@ -10,8 +10,14 @@ layouts in `layouts/<name>.json`.
   against its parent, and its message box starts with the description of `@`.
   **Describe** sets that description; the arrow beside it offers **Commit**
   (`jj commit`).
+- **jj-graph**: the `jj log` graph of the focused workspace, drawn by jj itself
+  (your `ui.graph.style` and `revsets.log`). Right-click a change to edit it,
+  start a new change on top, start a new workspace from it, squash it into its
+  parent, or abandon it. Squash keeps both descriptions instead of opening an
+  editor.
 - **jj-workspaces**: the dialog that creates, opens and removes jj
-  workspaces. A new workspace starts from `trunk()` in
+  workspaces. A new workspace starts from `trunk()`, or from the change it was
+  opened on in jj-graph, in
   `~/.herdr/jj-workspaces/<repo>/<name>`. Removing one deletes its folder;
   jj snapshots it first, so its tracked changes stay in history.
 - **jj-spaces**: the sidebar. A space in a jj workspace shows its bookmarks or
@@ -21,7 +27,7 @@ layouts in `layouts/<name>.json`.
   they do in Herdr's sidebar. Right-click opens jj-menu.
 - **jj-menu**, **jj-new-menu**, **jj-tabs**: the space right-click menu and
   the tab bar's `+` menu, with New, Open and Remove jj workspace where Herdr
-  has its Git worktree items.
+  has its Git worktree items. jj-tabs also has the Graph button.
 
 The sidebar never snapshots: a workspace's `*N` updates after any jj command
 runs there, or on its own if jj's watchman snapshot trigger is on.
@@ -33,7 +39,7 @@ says what it changed at the top of its `main.js`. Herdr won't update them.
 
 - **jj**: Herdr's `main` layout (from herdr-app 0.1.12) with jj-spaces,
   jj-tabs and jj-changes in place of Herdr's sidebar, tab bar and Changes
-  panel. Herdr won't update this copy when `main` changes. Switch to it with
+  panel, and jj-graph as a third side panel. Herdr won't update this copy when `main` changes. Switch to it with
   the layout picker, or:
 
   ```sh

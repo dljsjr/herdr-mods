@@ -140,6 +140,13 @@
                       "content": {
                         "mod": "jj-changes"
                       }
+                    },
+                    {
+                      "id": "graph",
+                      "type": "block",
+                      "content": {
+                        "mod": "jj-graph"
+                      }
                     }
                   ],
                   "active": "files"

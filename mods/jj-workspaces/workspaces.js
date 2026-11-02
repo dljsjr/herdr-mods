@@ -53,15 +53,15 @@ export function slug(name) {
 
 export const checkoutPath = (home, repo, name) => `${home}/.herdr/jj-workspaces/${repo.name}/${slug(name)}`;
 
-// Adds workspace `name` at its checkout path, starting from trunk(). Returns the path.
-export async function createWorkspace(exec, repo, home, name) {
+// Adds workspace `name` at its checkout path, starting from `revision`. Returns the path.
+export async function createWorkspace(exec, repo, home, name, revision = "trunk()") {
   if (!validName(name)) throw new Error("Use letters, digits, '.', '_', '-' and '/' in a workspace name.");
   const path = checkoutPath(home, repo, name);
   if (await exists(exec, path, repo.top)) throw new Error(`${path} already exists.`);
   const parent = path.slice(0, path.lastIndexOf("/"));
   const made = await exec("mkdir", ["-p", parent], repo.top);
   if (made.code !== 0) throw new Error(made.stderr.trim() || `Couldn't make ${parent}.`);
-  await jj(exec, ["workspace", "add", `--name=${name}`, "--revision=trunk()", path], repo.top);
+  await jj(exec, ["workspace", "add", `--name=${name}`, `--revision=${revision}`, path], repo.top);
   return path;
 }
 

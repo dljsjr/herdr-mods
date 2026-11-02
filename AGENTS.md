@@ -18,7 +18,7 @@ Every mod has a `VERSION` file holding `MAJOR.MINOR.PATCH`, and every layout has
 
 Tools are pinned in `mise.toml`. Run `mise run test` (bun test) and `mise run lint` (shellcheck) after changing `install.sh` or any mod's jj code.
 
-A mod cannot import from outside its own folder (`herdr-app check` rejects it). Code shared by the jj mods lives in `jj-repo.js`, copied into each mod that needs it; `tests/shared.test.js` fails when the copies differ. Keep jj commands and output parsing in plain modules with no Herdr imports, and test them against real jj repos.
+A mod cannot import from outside its own folder (`herdr-app check` rejects it). Code shared by the jj mods lives in `jj-repo.js`, copied into each mod that needs it; `tests/shared.test.js` fails when the copies differ. Doug's call (2026-11-02): copying is fine for now; consider a bundler if the shared code grows. Keep jj commands and output parsing in plain modules with no Herdr imports, and test them against real jj repos.
 
 Tests run jj with `tests/jj-config.toml`, not the person's config: their watchman snapshot trigger would race the tests and leave watches on deleted folders. `Bun.spawnSync` keeps the environment the process started with, so every spawn in the tests passes `{ env: process.env }`. Register `afterEach(removeTempDirs)` in each test file that uses `tests/jj-helpers.js`.
 
@@ -33,6 +33,10 @@ Never install, reload or experiment with mods against the person's running Herdr
 5. Clean up: `herdr-app do app.quit`, then `hc server stop` with the same `HC_SESSION`, then delete `<scratch>`.
 
 Do not set `XDG_STATE_HOME`. Shells in the scratch window inherit it and leave stray daemons such as watchman behind. `HC_SESSION` alone separates the core's state.
+
+`herdr-app shot` saves the last frame the window drew. A scratch window behind other windows can stop drawing, so every shot repeats an old frame. If two shots taken after a visible change are identical, relaunch the scratch window before trusting a screenshot.
+
+In a `v_virtual_list`, the row renderer can't attach handlers: `on_click` and the rest throw there, and the list draws nothing, without an error in `herdr-app status`. Use the list's `on_item_click` and `on_item_secondary_click`, which get the row's key.
 
 After every mod change, run `herdr-app check <mod folder>`. Then install it into the scratch app home, run `status` and `shot` against the scratch window, and look at the picture.
 

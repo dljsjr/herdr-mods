@@ -1,5 +1,7 @@
 // jj workspace dialog: { space, action: "new" | "open" | "remove" } or
-// { folder, machine } for a repo without a space; optional { tab, argv }.
+// { folder, machine } for a repo without a space; optional { tab, argv }, and
+// for "new" { revision, from? } to start somewhere other than trunk(), where
+// `from` names it for people (a change id) and `revision` names it for jj.
 //
 // Derived from defaults/mods/worktree/main.js in herdr-app 0.1.12
 // (https://github.com/herdrdev/herdr-app), licensed under the Apache License,
@@ -111,7 +113,7 @@ export default class JjWorkspaces extends View {
   async create() {
     const name = this.text.trim();
     if (!name) throw new Error("Type a workspace name.");
-    const path = await createWorkspace(this.sh, this.repo, this.userHome, name);
+    const path = await createWorkspace(this.sh, this.repo, this.userHome, name, props().revision);
     const p = props();
     // Leave spaces unnamed so they follow the checkout folder and nest under the repo.
     run("space.new", { folder: path, machine: this.on, tab: p.tab, argv: p.argv });
@@ -234,7 +236,7 @@ export default class JjWorkspaces extends View {
             ? !r.linked
               ? "This is the repo's main workspace, which jj keeps the repo in."
               : `Closes its spaces and deletes ${tilde(r.top, this.userHome)}. jj snapshots it first, so its tracked changes stay in history; files jj doesn't track are deleted.`
-            : `A new space on a checkout in ${tilde(checkoutPath(this.userHome ?? "", r, "x").replace(/\/x$/, ""), this.userHome)}/, starting from trunk().`;
+            : `A new space on a checkout in ${tilde(checkoutPath(this.userHome ?? "", r, "x").replace(/\/x$/, ""), this.userHome)}/, starting from ${props()?.revision ? props().from ?? props().revision.slice(0, 12) : "trunk()"}.`;
     const blocked = !r || (remove && !r.linked);
     return v_flex()
       .id("jj-workspaces")

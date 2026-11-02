@@ -107,6 +107,15 @@ describe("createWorkspace", () => {
     expect(await currentName(exec, await found(path))).toBe("Feat/One");
   });
 
+  test("starts from a given change instead of trunk()", async () => {
+    const repo = makeRepo();
+    const base = must(["log", "--no-graph", "-r", "@-", "-T", "commit_id"], repo.main);
+
+    const path = await createWorkspace(exec, await found(repo.main), tempDir(), "from-base", base);
+
+    expect(must(["log", "--no-graph", "-r", "@-", "-T", "commit_id"], path)).toBe(base);
+  });
+
   test("refuses a path that already exists and leaves it alone", async () => {
     const repo = makeRepo();
     const home = tempDir();
