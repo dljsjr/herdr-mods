@@ -1,13 +1,18 @@
 // jj workspace operations for the jj-workspaces dialog, following the old
-// herdr-jj plugin. `exec(command, args, cwd)` resolves to { code, stdout,
-// stderr }; `repo` comes from discover() in jj-repo.js.
+// herdr-jj plugin. `exec(command, args, cwd, options?)` resolves to { code,
+// stdout, stderr }, where options may carry a `timeout` in ms; `repo` comes
+// from discover() in jj-repo.js.
 import { READ } from "./jj-repo.js";
 
 const SEP = "\x1f";
 const LIST_TEMPLATE = `name ++ "\\x1f" ++ target.change_id().shortest(12) ++ "\\x1f" ++ target.description().first_line() ++ "\\n"`;
 
-async function jj(exec, args, cwd) {
-  const r = await exec("jj", args, cwd);
+// Herdr stops a command after 30 s by default; adding or removing a checkout of
+// a large repo can take longer. 10 minutes is the most Herdr allows.
+const LONG = { timeout: 600_000 };
+
+async function jj(exec, args, cwd, options) {
+  const r = await exec("jj", args, cwd, options);
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim() || `jj ${args.join(" ")} failed`);
   return r.stdout;
 }
@@ -61,7 +66,7 @@ export async function createWorkspace(exec, repo, home, name, revision = "trunk(
   const parent = path.slice(0, path.lastIndexOf("/"));
   const made = await exec("mkdir", ["-p", parent], repo.top);
   if (made.code !== 0) throw new Error(made.stderr.trim() || `Couldn't make ${parent}.`);
-  await jj(exec, ["workspace", "add", `--name=${name}`, `--revision=${revision}`, path], repo.top);
+  await jj(exec, ["workspace", "add", `--name=${name}`, `--revision=${revision}`, path], repo.top, LONG);
   return path;
 }
 
@@ -73,7 +78,7 @@ export async function removeWorkspace(exec, repo) {
   const name = await currentName(exec, repo);
   if ((await rootOf(exec, repo, name)) !== repo.top) throw new Error(`jj's workspace ${name} isn't this folder.`);
   await refuseLocked(exec, repo);
-  await jj(exec, ["workspace", "remove", "--", name], repo.main);
+  await jj(exec, ["workspace", "remove", "--", name], repo.main, LONG);
   return name;
 }
 

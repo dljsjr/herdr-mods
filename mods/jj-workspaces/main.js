@@ -7,6 +7,9 @@
 // (https://github.com/herdrdev/herdr-app), licensed under the Apache License,
 // Version 2.0. See LICENSE-Apache-2.0.txt beside this file.
 //
+// It also carries the original's 0.1.14 fixes: spaces and panes are read once
+// per render, long commands may run 10 minutes, and a spinner shows while busy.
+//
 // Changed from the original: it manages jj workspaces instead of Git
 // worktrees, following the old herdr-jj plugin (commands in workspaces.js).
 // New workspaces start from trunk() under ~/.herdr/jj-workspaces. Removal
@@ -21,19 +24,21 @@ import { discover } from "./jj-repo.js";
 import { checkoutPath, createWorkspace, currentName, listWorkspaces, removeWorkspace } from "./workspaces.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
-function place(s) {
+// `all`: panes(), read once by the caller when it looks at many spaces.
+function place(s, all = panes()) {
   if (!s) return null;
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
-  return panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder || null;
+  return all.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder || null;
 }
 
 const tilde = (path, userHome) => (userHome && path.startsWith(userHome) ? `~${path.slice(userHome.length)}` : path);
 const inside = (p, dir) => p === dir || p.startsWith(dir + "/");
 
 // The space showing a checkout: its first terminal is in it (the deepest checkout wins).
-function spaceOf(path, all, on) {
-  return spaces().find((s) => (s.machine ?? null) === (on ?? null) && (() => {
-    const at = place(s);
+// spaces() and panes() copy every space and pane, so callers read them once.
+function spaceOf(path, all, on, spaceList, paneList) {
+  return spaceList.find((s) => (s.machine ?? null) === (on ?? null) && (() => {
+    const at = place(s, paneList);
     if (!at || !inside(at, path)) return false;
     return !all.some((c) => c.root && c.root !== path && c.root.length > path.length && inside(at, c.root));
   })());
@@ -42,7 +47,7 @@ function spaceOf(path, all, on) {
 export default class JjWorkspaces extends View {
   init(_props, cx) {
     this.on = this.space()?.machine;
-    this.sh = (command, args, cwd) => exec(command, args, { cwd, on: this.on });
+    this.sh = (command, args, cwd, options) => exec(command, args, { cwd, on: this.on, ...options });
     this.readText = (path) => readTextFile(path, { on: this.on });
     this.userHome = this.on ? null : home();
     this.opening = props()?.action === "open";
@@ -129,7 +134,7 @@ export default class JjWorkspaces extends View {
     if (!c?.available || this.opened) return;
     this.opened = true;
     this.close();
-    const s = spaceOf(c.root, this.list, this.on);
+    const s = spaceOf(c.root, this.list, this.on, spaces(), panes());
     if (s) run("space.select", { id: s.id });
     else run("space.new", { folder: c.root, machine: this.on });
   }
@@ -137,8 +142,9 @@ export default class JjWorkspaces extends View {
   async remove() {
     const top = this.repo.top;
     await removeWorkspace(this.sh, this.repo);
+    const paneList = panes();
     for (const s of spaces()) {
-      const at = place(s);
+      const at = place(s, paneList);
       if ((s.machine ?? null) === (this.on ?? null) && at && inside(at, top)) run("space.close", { id: s.id, confirmed: true });
     }
   }
@@ -160,9 +166,11 @@ export default class JjWorkspaces extends View {
     const r = this.repo;
     const rows = this.shown();
     const all = this.list ?? [];
+    const spaceList = spaces();
+    const paneList = panes();
     const row = (c, i) => {
       const on = i === this.at;
-      const there = c.available && spaceOf(c.root, all, this.on);
+      const there = c.available && spaceOf(c.root, all, this.on, spaceList, paneList);
       return v_flex()
         .id(`ws-${i}`)
         .flex_none()
@@ -267,8 +275,10 @@ export default class JjWorkspaces extends View {
       .child(
         h_flex()
           .justify_end()
+          .gap(6)
           .text_size(11)
           .text_color(t.dim)
+          .when(this.busy, (el) => el.child(div().frames(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 90)))
           .child(this.busy ? "working…" : blocked ? "esc close" : remove ? "↵ remove · esc cancel" : "↵ create · esc cancel"),
       );
   }

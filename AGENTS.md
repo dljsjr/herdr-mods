@@ -7,6 +7,7 @@ Personal mods and layouts for the Herdr desktop app (`herdr-app`). A mod is trus
 - Read the installed app guide at `$HERDR_APP_HOME/AGENTS.md` (default `~/.config/herdr-app/AGENTS.md`) and `herdr.d.ts` beside it. Also run `herdr-app --skill` and `hc --skill`.
 - Search `gpui-kit.d.ts` when you need it. Do not read all 22,000 lines.
 - The shipped mods in the app home are reference code (Apache-2.0). Never edit them in place. A fork in this repo keeps the attribution and says what changed.
+- When Herdr updates, backport fixes worth having into our forks; exact tracking isn't the goal. Merge with `diff3 -m <our fork> <old upstream> <new upstream>`, using the upstream copies saved in `.sandpiper/docs/upstream-base/<version>/`, then save the new upstream copies there.
 
 ## Layout
 

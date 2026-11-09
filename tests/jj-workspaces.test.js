@@ -148,6 +148,25 @@ describe("createWorkspace", () => {
   });
 });
 
+// Herdr stops a command after 30 s unless told otherwise; adding or removing
+// a checkout of a large repo can take longer.
+describe("long-running commands", () => {
+  const recording = (calls) => async (command, args, cwd, options) => {
+    calls.push({ args, options });
+    return exec(command, args, cwd);
+  };
+
+  test("workspace add and remove may run for 10 minutes", async () => {
+    const repo = makeRepo();
+    const calls = [];
+    const path = await createWorkspace(recording(calls), await found(repo.main), tempDir(), "slow");
+    await removeWorkspace(recording(calls), await found(path));
+
+    const long = calls.filter((c) => c.args[0] === "workspace" && ["add", "remove"].includes(c.args[1]));
+    expect(long.map((c) => [c.args[1], c.options?.timeout])).toEqual([["add", 600000], ["remove", 600000]]);
+  });
+});
+
 describe("removeWorkspace", () => {
   test("removes a linked checkout and keeps its tracked changes in history", async () => {
     const repo = makeRepo();
