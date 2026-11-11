@@ -2,12 +2,13 @@
 // (https://github.com/herdrdev/herdr-app), licensed under the Apache License,
 // Version 2.0. See LICENSE-Apache-2.0.txt beside this file.
 //
-// Changed from the original: New and Open jj workspace replace New and Open
-// worktree, opening the jj-workspaces dialog.
+// Changed from the original: in a jj repo, New and Open jj workspace replace New
+// and Open worktree, opening the jj-workspaces dialog; a git repo keeps them.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared } from "herdr";
+import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared, exec, readTextFile } from "herdr";
+import { discover } from "./jj-repo.js";
 
 // The last agents each machine reported, shown at once while knownAgents() checks again.
 const KNOWN = "new-menu.agents";
@@ -44,6 +45,16 @@ export default class NewMenu extends View {
       catch { this.failed = true; }
       cx.notify();
     });
+    // jj rows until a look at the focused folder finds a git repo instead.
+    const folder = panes().find(p => p.focused)?.cwd ?? spaces().find(s => s.active)?.folder;
+    if (folder) cx.spawn(async cx => {
+      try {
+        const sh = (command, args, cwd) => exec(command, args, { cwd, on: machine });
+        if (await discover(sh, (path) => readTextFile(path, { on: machine }), folder)) return;
+        this.git = (await sh("git", ["rev-parse", "--show-toplevel"], folder)).code === 0;
+        cx.notify();
+      } catch {}
+    });
   }
   row(id, icon, name, action, hint = "", enabled = true) {
     const t = theme();
@@ -55,6 +66,7 @@ export default class NewMenu extends View {
   render() {
     const t = theme();
     const space = spaces().find(s => s.active);
+    const mod = this.git ? "worktree" : "jj-workspaces", noun = this.git ? "worktree" : "jj workspace";
     const installed = this.agents.filter(a => a.installed);
     const choices = [...installed, ...this.agents.filter(a => !a.installed).slice(0, 2)];
     return v_flex().min_h(0).w_full().h(Math.min(491, 167 + Math.max(1, choices.length) * 31)).bg(t.popover).p(5).text_size(12.8)
@@ -74,7 +86,7 @@ export default class NewMenu extends View {
         .when(this.agents.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim).child(this.failed ? "Could not load agents" : "Checking installed agents…"))))
       .child(div().h(1).mx(4).my(5).bg(t.border))
       .child(this.row("space", div().w(14).child("+"), "New space", () => run("space.new"), shortcut("space.new")))
-      .child(this.row("jj-workspace", svg("mods/workspace-chrome/branch.svg").size(14), "New jj workspace…", () => openOverlay({ mod: "jj-workspaces", kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))
-      .child(this.row("jj-workspace-open", svg("mods/workspace-chrome/branch.svg").size(14), "Open jj workspace\u2026", () => openOverlay({ mod: "jj-workspaces", kind: "dialog", width: 560, height: 480, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "open" } }), "", Boolean(space)));
+      .child(this.row("workspace-new", svg("mods/workspace-chrome/branch.svg").size(14), `New ${noun}…`, () => openOverlay({ mod, kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))
+      .child(this.row("workspace-open", svg("mods/workspace-chrome/branch.svg").size(14), `Open ${noun}\u2026`, () => openOverlay({ mod, kind: "dialog", width: 560, height: 480, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "open" } }), "", Boolean(space)));
   }
 }

@@ -28,6 +28,15 @@ describe("discover", () => {
     expect(found).toEqual({ top: linked, main: repo.main, name: "main", linked: true });
   });
 
+  test("returns null inside a git repo nested in a jj repo: the innermost repo wins", async () => {
+    const repo = makeRepo();
+    const nested = join(repo.main, "projects", "alpha");
+    mkdirSync(nested, { recursive: true });
+    must(["init", "-q"], nested, "git");
+
+    expect(await discover(exec, readText, nested)).toBeNull();
+  });
+
   test("returns null outside a jj repo", async () => {
     expect(await discover(exec, readText, tempDir())).toBeNull();
   });

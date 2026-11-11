@@ -1,15 +1,16 @@
 // Context menus (Herdr's items). Opened as a popup with
 // props { tab: "pane" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
-// a command "jj-workspaces" opens the jj workspace dialog instead.
+// a command "jj-workspaces" or "worktree" opens that dialog instead.
 //
-// jj-menu: derived from defaults/mods/menu/main.js in herdr-app 0.1.12
-// (https://github.com/herdrdev/herdr-app), licensed under the Apache License,
-// Version 2.0. See LICENSE-Apache-2.0.txt beside this file.
+// jj-menu: derived from defaults/mods/menu/main.js in herdr-app 0.1.12, with
+// its 0.1.14 fixes merged in (https://github.com/herdrdev/herdr-app), licensed
+// under the Apache License, Version 2.0. See LICENSE-Apache-2.0.txt beside
+// this file.
 //
 // Changed from the original: a space in a jj repo offers New and Open jj
 // workspace, and Remove jj workspace on a workspace other than the main one,
-// in place of the Git worktree items, which are gone.
+// in place of the Git worktree items; a space in a git repo keeps those.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -22,13 +23,22 @@ function place(s) {
   return panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
 }
 
-// A space's jj workspace: "main" (the repo's own), "linked" (another), or null.
+// A space's checkout: { kind: "jj" | "git", linked }, where linked means a jj
+// workspace or Git worktree other than the repo's main one; null outside both.
 async function checkout(folder, on) {
-  const repo = await discover((command, args, cwd) => exec(command, args, { cwd, on }), (path) => readTextFile(path, { on }), folder);
-  return repo ? (repo.linked ? "linked" : "main") : null;
+  const sh = (command, args, cwd) => exec(command, args, { cwd, on });
+  const repo = await discover(sh, (path) => readTextFile(path, { on }), folder);
+  if (repo) return { kind: "jj", linked: repo.linked };
+  const top = await sh("git", ["rev-parse", "--show-toplevel"], folder);
+  const common = await sh("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], folder);
+  if (top.code !== 0 || common.code !== 0) return null;
+  return { kind: "git", linked: common.stdout.trim() !== `${top.stdout.trim()}/.git` };
 }
 
-function items(p, jj) {
+const noun = (vcs) => (vcs.kind === "jj" ? "jj workspace" : "worktree");
+const dialog = (vcs) => (vcs.kind === "jj" ? "jj-workspaces" : "worktree");
+
+function items(p, vcs) {
   p = p ?? {};
   const tg = p.target ?? {};
   switch (p.tab) {
@@ -39,10 +49,17 @@ function items(p, jj) {
       const parent = term?.parent && all.find((t) => t.address === term.parent);
       // Once they go to the program, Shift+right-click still opens this menu.
       const toProgram = term?.labels?.["herdr.right-click"] === "program";
+      // A terminal shown outside a tab (a layout terminal block, a window) has
+      // no pane to split, zoom or close: its pane is the block's id.
+      const inTab = panes().some((pane) => pane.pane === tg.pane);
       return [
-        ["Split right", "pane.split", { direction: "right", pane: tg.pane }],
-        ["Split down", "pane.split", { direction: "down", pane: tg.pane }],
-        ["Zoom", "pane.zoom", { pane: tg.pane }],
+        ...(inTab
+          ? [
+              ["Split right", "pane.split", { direction: "right", pane: tg.pane }],
+              ["Split down", "pane.split", { direction: "down", pane: tg.pane }],
+              ["Zoom", "pane.zoom", { pane: tg.pane }],
+            ]
+          : []),
         ...(term
           ? [
               toProgram
@@ -51,7 +68,7 @@ function items(p, jj) {
             ]
           : []),
         ...(parent ? [[`Send back to ${parent.name || parent.address}`, "terminal.park", { terminal: term.address }]] : []),
-        ["Close pane", "pane.close", { pane: tg.pane }],
+        ...(inTab ? [["Close pane", "pane.close", { pane: tg.pane }]] : []),
       ];
     }
     case "tab":
@@ -63,8 +80,8 @@ function items(p, jj) {
     case "space":
       return [
         ["Rename", "space.rename", { id: tg.id }],
-        ...(jj ? [["New jj workspace", "jj-workspaces", { space: tg.id, action: "new" }], ["Open jj workspace", "jj-workspaces", { space: tg.id, action: "open" }]] : []),
-        ...(jj === "linked" ? [["Remove jj workspace", "jj-workspaces", { space: tg.id, action: "remove" }]] : []),
+        ...(vcs ? [[`New ${noun(vcs)}`, dialog(vcs), { space: tg.id, action: "new" }], [`Open ${noun(vcs)}`, dialog(vcs), { space: tg.id, action: "open" }]] : []),
+        ...(vcs?.linked ? [[`Remove ${noun(vcs)}`, dialog(vcs), { space: tg.id, action: "remove" }]] : []),
         ["Close", "space.close", { id: tg.id }],
       ];
     default:
@@ -80,7 +97,7 @@ function items(p, jj) {
 }
 
 function menuIcon(command) {
-  const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "jj-workspaces" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
+  const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "jj-workspaces" || command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
 
@@ -95,7 +112,7 @@ function shortcut(name, args) {
 export default class Menu extends View {
   init(_props, cx) {
     this.at = 0;
-    this.jj = null;
+    this.vcs = null;
     this.handle = cx.focus_handle();
     this.handle.focus();
     const p = props();
@@ -103,22 +120,22 @@ export default class Menu extends View {
     const folder = space && place(space);
     if (folder)
       cx.spawn(async (cx) => {
-        this.jj = await checkout(folder, space.machine).catch(() => null);
+        this.vcs = await checkout(folder, space.machine).catch(() => null);
         cx.notify();
       });
   }
 
   choose(i, cx) {
-    const it = items(props(), this.jj)[i];
+    const it = items(props(), this.vcs)[i];
     if (!it) return;
     closeOverlay(props()?.overlay);
-    if (it[1] === "jj-workspaces") openOverlay({ mod: "jj-workspaces", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 460, height: 280 }), props: it[2] });
+    if (it[1] === "jj-workspaces" || it[1] === "worktree") openOverlay({ mod: it[1], kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : it[1] === "worktree" ? { width: 440, height: 260 } : { width: 460, height: 280 }), props: it[2] });
     else run(it[1], it[2]);
   }
 
   render(cx) {
     const t = theme();
-    const list = items(props(), this.jj);
+    const list = items(props(), this.vcs);
     return v_flex()
       .id("menu")
       .track_focus(this.handle)

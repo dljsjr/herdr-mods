@@ -11,11 +11,17 @@ export const READ = ["--no-pager", "--color=never", "--ignore-working-copy"];
 
 // The workspace a folder is in: { top, main, name, linked }, where `main` is
 // the workspace holding the repo, `name` its folder name, and `linked` says
-// `top` is another workspace. null outside jj.
+// `top` is another workspace. null outside jj, and inside a git repo nested in
+// a jj workspace: jj names the outer workspace there, but the innermost repo is
+// the one the folder belongs to.
 export async function discover(exec, readText, folder) {
-  const root = await exec("jj", [...READ, "workspace", "root"], folder);
+  const [root, git] = await Promise.all([
+    exec("jj", [...READ, "workspace", "root"], folder),
+    exec("git", ["rev-parse", "--show-toplevel"], folder),
+  ]);
   if (root.code !== 0) return null;
   const top = root.stdout.trim();
+  if (git.code === 0 && git.stdout.trim().length > top.length) return null;
   // The main workspace keeps the repo in .jj/repo; another one has a file
   // there with the repo's path, relative to its own .jj.
   let pointer = null;

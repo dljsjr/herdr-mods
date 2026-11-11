@@ -1,22 +1,27 @@
-// jj-changes: a jj version of Herdr's Changes panel.
+// jj-changes: Herdr's Changes panel for jj and git, across every repo below
+// the focused folder.
 //
 // Derived from defaults/mods/changes/main.js in herdr-app 0.1.12, with its
 // 0.1.14 fixes merged in (https://github.com/herdrdev/herdr-app), licensed
 // under the Apache License, Version 2.0. See LICENSE-Apache-2.0.txt beside
 // this file.
 //
-// Changed from the original: it reads jj instead of Git (commands and parsing
-// in jj.js) and works only in jj repos; the whole diff of @ loads in one call;
-// the message box is multi-line and starts with the description of @; a split
-// button runs Describe, with Commit behind its arrow; and a change that lands
-// during a refresh starts another refresh.
+// Changed from the original: it lists the changed files of the repo containing
+// the focused folder and of every repo below it (repos.js finds them, ignore
+// rules or not), in one list. Each repo is read by its own tool: jj (jj.js; the
+// whole diff of @ in one call) or git (repos.js). The message box acts on the
+// selected file's repo and names it: for jj it is multi-line, starts with the
+// description of @, and a split button runs Describe with Commit behind its
+// arrow; for git it runs Commit as the original does. A watched change re-reads
+// only the repo it falls in, and one that lands during a refresh starts another.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, settings } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings } from "herdr";
 import {
-  DIFF_ARGS, HEAD_ARGS, ROOT_ARGS, SNAPSHOT_ARGS, TRIGGER_ARGS,
+  DIFF_ARGS, HEAD_ARGS, SNAPSHOT_ARGS, TRIGGER_ARGS,
   commitArgs, describeArgs, parseDiff, parseHead, snapshotsItself,
 } from "./jj.js";
+import { findRepos, gitCommitSteps, readGit } from "./repos.js";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -27,6 +32,18 @@ function location() {
 const key = () => JSON.stringify(location());
 const MAX_OUTPUT = 8 * 1024 * 1024;
 const trimEnd = (text) => text.replace(/\s+$/, "");
+const inside = (path, dir) => path === dir || path.startsWith(`${dir}/`);
+// A path in a repo's own records: a commit, a jj operation, a new clone.
+const META = /^(.*?)\/\.(git|jj)(\/|$)/;
+
+// Runs fn over items, a few at a time: dozens of repos at once would start
+// dozens of processes.
+async function eachLimited(items, limit, fn) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) await fn(items[next++]);
+  }));
+}
 
 // Numbers each diff line once, so a frame only draws the rows on screen.
 function diffRows(lines) {
@@ -50,8 +67,8 @@ function previewLines(file) {
 
 export default class JjChanges extends View {
   init(_props, cx) {
-    this.files = []; this.rows = []; this.diffWidth = 0; this.message = ""; this.shown = ""; this.handle = cx.focus_handle();
-    this.input = TextareaState.new({ placeholder: "Describe this change" });
+    this.repos = []; this.files = []; this.rows = []; this.diffWidth = 0; this.message = ""; this.shown = ""; this.target = null; this.handle = cx.focus_handle();
+    this.input = TextareaState.new({ placeholder: "Message" });
     this.input.set_auto_grow(1, 6);
     this.input.on("change", (_e, cx) => {
       const before = this.message;
@@ -60,73 +77,153 @@ export default class JjChanges extends View {
     });
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
-    this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    this.ticks = 0;
+    this.refresh(cx, { search: true });
+    // The folder watch reports changes as they happen. The timer covers what it
+    // can't see: remote machines, and on Linux, folders the repo ignores.
+    cx.timer.every(10000, (cx) => {
+      this.ticks++;
+      const slow = this.ticks % 6 === 0;
+      if (!this.watched || slow) this.refresh(cx, { search: slow });
+    });
   }
 
-  watch(root, cx) {
-    if (this.on || this.watched === root) return;
-    this.watched = root;
+  watch(path, cx) {
+    if (this.on || this.watched === path) return;
+    this.watched = path;
     cx.spawn(async (cx) => {
       try {
-        while (this.watched === root) {
-          await watchFolder(root);
-          if (this.watched === root) this.refresh(cx);
+        while (this.watched === path) {
+          const changed = await watchFolder(path);
+          if (this.watched === path) this.changed(changed, path, cx);
         }
       } catch { this.watched = null; }
     });
   }
 
-  // Puts the description of @ in the box, unless the box holds unsaved typing.
-  showDescription(description) {
-    const text = trimEnd(description);
-    if (this.message !== this.shown || text === this.shown) return;
-    this.shown = text; this.message = text; this.input.set_value(text);
+  // A changed path inside a repo re-reads that repo. A .git or .jj folder no
+  // known repo owns means a repo appeared or went: look for repos again.
+  changed(paths, root, cx) {
+    if (paths.includes(root)) return this.refresh(cx, { search: true });
+    const roots = this.repos.map((r) => r.root).sort((a, b) => b.length - a.length);
+    const only = new Set();
+    let search = false;
+    for (const path of paths) {
+      const meta = META.exec(path);
+      if (meta) {
+        if (roots.includes(meta[1])) only.add(meta[1]);
+        else search = true;
+        continue;
+      }
+      const owner = roots.find((r) => inside(path, r));
+      if (owner) only.add(owner);
+    }
+    if (search || only.size) this.refresh(cx, { search, only: search ? null : only });
   }
 
-  refresh(cx) {
-    if (this.loading || this.busy) { this.pending = true; return; }
+  // `search` looks for repos again; `only` re-reads just those repos.
+  refresh(cx, { search = false, only = null } = {}) {
+    if (this.loading || this.busy) {
+      // Merge into what's already waiting; a null `only` means every repo.
+      const p = this.pending ?? { search: false, only: new Set() };
+      this.pending = { search: p.search || search, only: p.only === null || only === null ? null : new Set([...p.only, ...only]) };
+      return;
+    }
     const { cwd, on } = location(), context = key();
     if (context !== this.context) {
-      this.context = context; this.root = null; this.files = []; this.open = null; this.head = null; this.selfSnapshot = null;
+      this.context = context; this.repos = []; this.files = []; this.open = null; this.target = null; this.truncated = false;
       this.setLines([]); this.message = ""; this.shown = ""; this.input.set_value(""); this.error = null; this.note = null; this.watched = null; this.closed = false; this.limited = false; this.menu = false;
+      search = true;
     }
     if (!cwd) return;
-    this.loading = true; this.pending = false;
+    this.loading = true; this.pending = null;
     cx.spawn(async (cx) => {
       try {
-        const top = await exec("jj", ROOT_ARGS, { cwd, on });
-        if (key() !== context) return;
-        if (top.code !== 0) {
-          this.root = null; this.files = []; this.head = null; this.setLines([]); this.open = null;
-          this.error = "Not a jj repository. Run jj git init --colocate to use jj here.";
-          return;
+        const sh = (command, args, dir) => exec(command, args, { cwd: dir, on });
+        const readText = (path) => readTextFile(path, { on });
+        let targets = only ? this.repos.filter((r) => only.has(r.root)) : this.repos;
+        if (search || !this.repos.length) {
+          const found = await findRepos(sh, readText, cwd);
+          if (key() !== context) return;
+          const known = new Map(this.repos.map((r) => [r.root, r]));
+          this.repos = found.repos.map((r) => known.get(r.root) ?? { ...r, files: [], head: null, error: null, selfSnapshot: null });
+          this.truncated = found.truncated;
+          targets = this.repos;
         }
-        const root = top.stdout.trim(), jj = async (args) => {
-          const r = await exec("jj", args, { cwd: root, on });
-          if (r.code !== 0) throw new Error(trimEnd(r.stderr || r.stdout));
-          return r.stdout;
-        };
-        if (this.selfSnapshot === null) this.selfSnapshot = snapshotsItself(await exec("jj", TRIGGER_ARGS, { cwd: root, on }));
-        if (!this.selfSnapshot) await jj(SNAPSHOT_ARGS);
-        const head = parseHead(await jj(HEAD_ARGS));
-        const diff = await jj(DIFF_ARGS);
-        if (diff.length >= MAX_OUTPUT) throw new Error("This change is too large to show here. Use jj diff in a terminal.");
-        const files = parseDiff(diff);
+        await eachLimited(targets, 6, (repo) => this.read(repo, sh, readText));
         if (key() !== context) return;
-        this.root = root; this.on = on; this.head = head; this.files = files.slice(0, 1000); this.limited = files.length > 1000; this.error = null;
-        this.showDescription(head.description);
-        this.watch(root, cx);
-        if (this.open && !this.files.some((f) => f.path === this.open)) { this.open = null; this.setLines([]); }
+        this.start = cwd; this.on = on;
+        this.error = this.repos.length ? null : "No git or jj repository here.";
+        this.flatten();
+        const outer = this.repos.find((r) => inside(cwd, r.root));
+        this.watch(outer?.root ?? cwd, cx);
+        if (this.open && !this.files.some((f) => f.key === this.open)) { this.open = null; this.setLines([]); }
         // The first file's diff shows until you pick another.
-        if (!this.open && !this.closed && this.files.length) this.open = this.files[0].path;
-        if (this.open) this.setLines(previewLines(this.files.find((f) => f.path === this.open)));
+        if (!this.open && !this.closed && this.files.length) this.open = this.files[0].key;
+        if (this.open) this.setLines(previewLines(this.files.find((f) => f.key === this.open)));
+        this.retarget();
       } catch (e) { if (key() === context) this.error = String(e.message ?? e); }
       finally {
         this.loading = false; cx.notify();
-        if (this.pending) this.refresh(cx);
+        if (this.pending) this.refresh(cx, this.pending);
       }
     });
+  }
+
+  async read(repo, sh, readText) {
+    try {
+      if (repo.kind === "jj") {
+        const jj = async (args) => {
+          const r = await sh("jj", args, repo.root);
+          if (r.code !== 0) throw new Error(trimEnd(r.stderr || r.stdout));
+          return r.stdout;
+        };
+        // Reads skip jj's snapshot; where watchman doesn't take one on every
+        // change, take it here first.
+        if (repo.selfSnapshot === null) repo.selfSnapshot = snapshotsItself(await sh("jj", TRIGGER_ARGS, repo.root));
+        if (!repo.selfSnapshot) await jj(SNAPSHOT_ARGS);
+        repo.head = parseHead(await jj(HEAD_ARGS));
+        const diff = await jj(DIFF_ARGS);
+        if (diff.length >= MAX_OUTPUT) throw new Error("This change is too large to show here. Use jj diff in a terminal.");
+        repo.files = parseDiff(diff);
+      } else {
+        const nested = this.repos.filter((r) => r !== repo && inside(r.root, repo.root)).map((r) => r.root);
+        repo.files = await readGit(sh, readText, repo.root, nested);
+      }
+      repo.error = null;
+    } catch (e) { repo.files = []; repo.error = String(e.message ?? e); }
+  }
+
+  // One list for every repo, each path shown from the focused folder.
+  flatten() {
+    const files = [];
+    for (const repo of this.repos) {
+      const prefix = repo.root !== this.start && inside(repo.root, this.start) ? `${repo.root.slice(this.start.length + 1)}/` : "";
+      for (const f of repo.files) files.push({ ...f, repo: repo.root, key: `${repo.root}:${f.path}`, display: prefix + f.path });
+    }
+    files.sort((a, b) => (a.display < b.display ? -1 : a.display > b.display ? 1 : 0));
+    this.files = files.slice(0, 1000); this.limited = files.length > 1000;
+  }
+
+  label(repo) {
+    return inside(this.start ?? "", repo.root) ? repo.root.split("/").pop() : repo.root.slice(this.start.length + 1);
+  }
+
+  // The repo the message box acts on: the selected file's, else the first with
+  // changes, else the one containing the focused folder.
+  targetRepo() {
+    const root = this.files.find((f) => f.key === this.open)?.repo ?? this.files[0]?.repo;
+    return this.repos.find((r) => r.root === root) ?? this.repos.find((r) => inside(this.start ?? "", r.root)) ?? this.repos[0] ?? null;
+  }
+
+  // Shows the target repo's description of @ in the box (empty for git),
+  // unless the box holds unsaved typing.
+  retarget() {
+    const repo = this.targetRepo();
+    this.target = repo?.root ?? null;
+    const text = repo?.kind === "jj" ? trimEnd(repo.head?.description ?? "") : "";
+    if (this.message !== this.shown || text === this.shown) return;
+    this.shown = text; this.message = text; this.input.set_value(text);
   }
 
   setLines(lines) {
@@ -134,31 +231,35 @@ export default class JjChanges extends View {
     this.diffWidth = Math.max(300, ...lines.map(line => line.length * 7 + 50));
   }
 
-  pick(path, cx) {
-    this.open = this.open === path ? null : path; this.note = null;
+  pick(fileKey, cx) {
+    this.open = this.open === fileKey ? null : fileKey; this.note = null;
     this.closed = !this.open;
-    this.setLines(this.open ? previewLines(this.files.find((f) => f.path === path)) : []);
+    this.setLines(this.open ? previewLines(this.files.find((f) => f.key === fileKey)) : []);
+    this.retarget();
     cx.notify();
   }
 
-  // Runs `jj describe` or `jj commit` with the box's text.
+  // Runs jj describe, jj commit, or git add -A and git commit in the target repo.
   run(action, cx) {
     this.menu = false;
-    const message = trimEnd(this.message);
-    if (!message || !this.root || this.busy || this.loading || this.context !== key()) return;
+    const message = trimEnd(this.message), repo = this.targetRepo();
+    if (!message || !repo || this.busy || this.loading || this.context !== key()) return;
     if (action === "describe" && message === this.shown) return;
-    const root = this.root, on = this.on, context = this.context;
+    const context = this.context, on = this.on;
+    const steps = repo.kind === "git" ? gitCommitSteps(message) : [action === "commit" ? commitArgs(message) : describeArgs(message)];
     this.busy = action; this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("jj", action === "commit" ? commitArgs(message) : describeArgs(message), { cwd: root, on });
-        if (r.code !== 0) throw new Error(trimEnd(r.stderr || r.stdout));
+        for (const args of steps) {
+          const r = await exec(repo.kind, args, { cwd: repo.root, on });
+          if (r.code !== 0) throw new Error(trimEnd(r.stderr || r.stdout));
+        }
         if (key() === context) {
-          const text = action === "commit" ? "" : message;
+          const text = action === "describe" ? message : "";
           this.shown = text; this.message = text; this.input.set_value(text);
         }
-      } catch (e) { if (key() === context) this.note = `${action === "commit" ? "Commit" : "Describe"} failed: ${e.message ?? e}`; }
-      finally { this.busy = false; this.refresh(cx); cx.notify(); }
+      } catch (e) { if (key() === context) this.note = `${action === "describe" ? "Describe" : "Commit"} failed: ${e.message ?? e}`; }
+      finally { this.busy = false; this.refresh(cx, { only: new Set([repo.root]) }); cx.notify(); }
     });
     cx.notify();
   }
@@ -170,8 +271,14 @@ export default class JjChanges extends View {
       .child(div().flex_1().min_w(0).truncate().child(text));
   }
 
-  splitButton(t) {
-    const ready = Boolean(trimEnd(this.message) && this.root && !this.busy && !this.loading);
+  // jj: Describe, with Commit behind the arrow. git: Commit.
+  actionButton(t, repo) {
+    const ready = Boolean(trimEnd(this.message) && repo && !this.busy && !this.loading);
+    if (repo?.kind === "git") {
+      return div().id("commit").flex_none().h(32).px(14).flex().items_center().rounded(8).text_size(12)
+        .bg(ready ? t.solid : t.raised).text_color(ready ? t.solid_foreground : t.dim)
+        .when(ready, (e) => e.cursor_pointer()).on_click((_e, cx) => this.run("commit", cx)).child(this.busy ? "Committing…" : "Commit");
+    }
     const canDescribe = ready && trimEnd(this.message) !== this.shown;
     const label = this.busy === "commit" ? "Committing…" : this.busy === "describe" ? "Describing…" : "Describe";
     return h_flex().flex_none().h(32).rounded(8).overflow_hidden().text_size(12)
@@ -193,6 +300,10 @@ export default class JjChanges extends View {
   render(cx) {
     if (key() !== this.context) this.refresh(cx);
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
+    const mono = settings().font_family ?? "JetBrains Mono";
+    const target = this.repos.find((r) => r.root === this.target);
+    const spanned = new Set(this.files.map((f) => f.repo)).size;
+    const failed = this.repos.filter((r) => r.error);
     return v_flex().id("jj-changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.menu) { this.menu = false; cx.stop_propagation(); cx.notify(); return; }
@@ -200,31 +311,36 @@ export default class JjChanges extends View {
       })
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Changes"))
-        .when(Boolean(this.head), (e) => e.child(div().text_size(11).text_color(t.dim).font_family(settings().font_family ?? "JetBrains Mono").child(`@ ${this.head.change}`)))
-        .when(Boolean(this.head?.conflict), (e) => e.child(div().px(5).py(1).rounded(4).border_1().border_color(t.ansi1).text_size(10).text_color(t.ansi1).child("conflict")))
-        .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files`))
+        .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files${spanned > 1 ? ` · ${spanned} repos` : ""}`))
         .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)))
       // overflow_y_scrollbar() wraps the list, so its flex sizing never reached the panel's layout.
       .child(div().flex_1().min_h(44).max_h(this.files.length * 28 + 12).relative().border_b(1).border_color(t.border)
         .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().p(6).children(this.files.map((f) => {
-        const parts = f.path.split("/"), name = parts.pop();
-        return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
-          .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : t.blocked).child(f.status))
+        const parts = f.display.split("/"), name = parts.pop();
+        return h_flex().id(`change-${f.key}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.key, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.key, cx))
+          .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" || f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
           .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
           .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
-      })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading && !this.head ? "Loading changes…" : this.root ? "No changes in @" : "No folder")))))
+      })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading && !this.repos.length ? "Loading changes…" : this.repos.length ? "No changes" : "No folder")))))
         .child(Scrollbar.vertical("changes-list").absolute().inset_0()))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
-      .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
+      .when(Boolean(this.truncated), el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child(`Stopped looking after ${this.repos.length} repositories`)))
+      .children(failed.map((r) => div().px(12).py(2).text_size(11).text_color(t.ansi1).truncate().child(`${this.label(r)}: ${r.error}`)))
+      .child(div().flex_1().min_h(0).relative().font_family(mono).text_size(11)
         .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar()
           .child(div().w_full().min_w(this.diffWidth).h_full().child(v_virtual_list("changes-diff", this.rows.length, 20, (i) => String(i),
             (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full())))
         .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
         .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child("Select a file to view its changes"))))
       .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))
-      .child(h_flex().relative().flex_none().p(10).gap(8).items_end().border_t(1).border_color(t.border)
-        .child(div().id("description").flex_1().min_w(0).px(10).py(6).rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Textarea.new(this.input).text_size(12).text_color(t.foreground)))
-        .child(this.splitButton(t))
+      .child(v_flex().relative().flex_none().p(10).gap(6).border_t(1).border_color(t.border)
+        .when(Boolean(target), (e) => e.child(h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
+          .child(div().text_color(t.muted).child(this.label(target)))
+          .child(div().font_family(mono).child(target.kind === "jj" && target.head ? `jj @${target.head.change}` : target.kind))
+          .when(Boolean(target.head?.conflict), (e) => e.child(div().px(5).rounded(4).border_1().border_color(t.ansi1).text_size(10).text_color(t.ansi1).child("conflict")))))
+        .child(h_flex().gap(8).items_end()
+          .child(div().id("description").flex_1().min_w(0).px(10).py(6).rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Textarea.new(this.input).text_size(12).text_color(t.foreground)))
+          .child(this.actionButton(t, target)))
         .when(this.menu, (e) => e.child(this.actionsMenu(t))));
   }
 }

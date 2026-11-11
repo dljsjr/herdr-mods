@@ -6,10 +6,17 @@ layouts in `layouts/<name>.json`.
 
 ## Mods
 
-- **jj-changes**: the Changes panel for jj repos. It shows the diff of `@`
-  against its parent, and its message box starts with the description of `@`.
-  **Describe** sets that description; the arrow beside it offers **Commit**
-  (`jj commit`).
+- **jj-changes**: the Changes panel for jj and git. It lists, in one list, the
+  changed files of the repo containing the focused folder and of every repo
+  below it, including repos in folders the outer repo ignores, so changes an
+  agent makes from a workbench root show up. It doesn't look inside nested
+  repos for further repos, and stops after 50 repos. For a jj repo a file is
+  changed in `@`; for git, against `HEAD` or untracked. The message box acts on
+  the selected file's repo, named above it: for jj it starts with that repo's
+  `@` description, **Describe** sets it and the arrow offers **Commit**
+  (`jj commit`); for git, **Commit** runs `git add -A` and `git commit`. On
+  Linux, Herdr doesn't watch ignored folders, so changes there show on the next
+  minute's refresh.
 - **jj-graph**: the `jj log` graph of the focused workspace, in jj's order and
   your `revsets.log`, drawn as colored lanes, one per line of descent, with or
   without bookmarks. A dashed line runs through changes the revset hides, as
@@ -32,7 +39,11 @@ layouts in `layouts/<name>.json`.
   they do in Herdr's sidebar. Right-click opens jj-menu.
 - **jj-menu**, **jj-new-menu**, **jj-tabs**: the space right-click menu and
   the tab bar's `+` menu, with New, Open and Remove jj workspace where Herdr
-  has its Git worktree items. jj-tabs also has the Graph button.
+  has its Git worktree items. In a git repo they keep Herdr's worktree items.
+  jj-tabs also has the Graph button.
+
+Inside a git repo nested in a jj repo, every mod treats the folder as git: the
+innermost repo wins.
 
 The sidebar never snapshots: a workspace's `*N` updates after any jj command
 runs there, or on its own if jj's watchman snapshot trigger is on.
