@@ -111,3 +111,27 @@ export async function readGit(exec, readText, root, nested) {
 }
 
 export const gitCommitSteps = (message) => [["add", "-A"], ["commit", `--message=${message}`]];
+
+// The Changes list's rows. Flat: { type: "file", file, text } per file, text
+// being its path from the focused folder. Grouped: a { type: "repo", root,
+// label, kind, head, count, add, del, collapsed } header per repo with changes,
+// the repos containing `start` first, then by label, each followed by its
+// files (unless collapsed), text being the path from the repo's root.
+export function listRows(files, repos, { grouped, start = "", labelOf = (r) => r.root, collapsed = new Set() } = {}) {
+  if (!grouped) return files.map((file) => ({ type: "file", file, text: file.display }));
+  const contains = (repo) => start === repo.root || start.startsWith(`${repo.root}/`);
+  const order = repos.filter((r) => files.some((f) => f.repo === r.root))
+    .map((repo) => ({ repo, label: labelOf(repo) }))
+    .sort((a, b) => contains(b.repo) - contains(a.repo) || (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+  const rows = [];
+  for (const { repo, label } of order) {
+    const mine = files.filter((f) => f.repo === repo.root).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const shut = collapsed.has(repo.root);
+    rows.push({
+      type: "repo", root: repo.root, label, kind: repo.kind, head: repo.head, collapsed: shut,
+      count: mine.length, add: mine.reduce((n, f) => n + f.add, 0), del: mine.reduce((n, f) => n + f.del, 0),
+    });
+    if (!shut) for (const file of mine) rows.push({ type: "file", file, text: file.path });
+  }
+  return rows;
+}

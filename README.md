@@ -14,7 +14,9 @@ layouts in `layouts/<name>.json`.
   changed in `@`; for git, against `HEAD` or untracked. The message box acts on
   the selected file's repo, named above it: for jj it starts with that repo's
   `@` description, **Describe** sets it and the arrow offers **Commit**
-  (`jj commit`); for git, **Commit** runs `git add -A` and `git commit`. On
+  (`jj commit`); for git, **Commit** runs `git add -A` and `git commit`. With
+  more than one repo, the layers button in the header groups the list by
+  repository, one collapsible section per repo; the choice is remembered. On
   Linux, Herdr doesn't watch ignored folders, so changes there show on the next
   minute's refresh.
 - **jj-graph**: the `jj log` graph of the focused workspace, in jj's order and

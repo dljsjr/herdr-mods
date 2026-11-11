@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { exec, must, removeTempDirs, tempDir } from "./jj-helpers.js";
-import { findRepos, readGit } from "../mods/jj-changes/repos.js";
+import { findRepos, listRows, readGit } from "../mods/jj-changes/repos.js";
 
 afterEach(removeTempDirs);
 
@@ -147,5 +147,42 @@ describe("readGit", () => {
 
     expect(statSync(index).mtimeMs).toBe(before);
     expect(existsSync(join(repo, ".git", "index.lock"))).toBe(false);
+  });
+});
+
+describe("listRows", () => {
+  const repos = [
+    { root: "/wb", kind: "git", head: null },
+    { root: "/wb/projects/zeta", kind: "git", head: null },
+    { root: "/wb/projects/alpha", kind: "jj", head: { change: "qrst" } },
+    { root: "/wb/projects/clean", kind: "git", head: null },
+  ];
+  const file = (repo, path, add = 1, del = 0) => ({ repo, path, add, del, key: `${repo}:${path}`, display: (repo === "/wb" ? "" : `${repo.slice(4)}/`) + path });
+  const files = [
+    file("/wb", "NOTES.md"),
+    file("/wb/projects/alpha", "a.rs", 2, 1),
+    file("/wb/projects/alpha", "b.rs"),
+    file("/wb/projects/zeta", "z.rs"),
+  ];
+  const labelOf = (repo) => (repo.root === "/wb" ? "wb" : repo.root.slice(4));
+
+  test("flat: one row per file, shown from the focused folder", () => {
+    expect(listRows(files, repos, { grouped: false }).map((r) => r.text)).toEqual(["NOTES.md", "projects/alpha/a.rs", "projects/alpha/b.rs", "projects/zeta/z.rs"]);
+  });
+
+  test("grouped: the containing repo first, then by path; files under their repo, from its root", () => {
+    const rows = listRows(files, repos, { grouped: true, start: "/wb", labelOf });
+
+    expect(rows.map((r) => (r.type === "repo" ? `# ${r.label} ${r.count} +${r.add} -${r.del}` : `  ${r.text}`))).toEqual([
+      "# wb 1 +1 -0", "  NOTES.md",
+      "# projects/alpha 2 +3 -1", "  a.rs", "  b.rs",
+      "# projects/zeta 1 +1 -0", "  z.rs",
+    ]);
+  });
+
+  test("grouped: a collapsed repo keeps its header and hides its files", () => {
+    const rows = listRows(files, repos, { grouped: true, start: "/wb", labelOf, collapsed: new Set(["/wb/projects/alpha"]) });
+
+    expect(rows.filter((r) => r.root === "/wb/projects/alpha" || r.file?.repo === "/wb/projects/alpha").map((r) => [r.type, r.collapsed])).toEqual([["repo", true]]);
   });
 });

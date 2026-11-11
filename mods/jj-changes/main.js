@@ -14,14 +14,15 @@
 // description of @, and a split button runs Describe with Commit behind its
 // arrow; for git it runs Commit as the original does. A watched change re-reads
 // only the repo it falls in, and one that lands during a refresh starts another.
-import { View, div } from "gpui-kit";
+// With several repos, a toggle groups the list by repository.
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings } from "herdr";
 import {
   DIFF_ARGS, HEAD_ARGS, SNAPSHOT_ARGS, TRIGGER_ARGS,
   commitArgs, describeArgs, parseDiff, parseHead, snapshotsItself,
 } from "./jj.js";
-import { findRepos, gitCommitSteps, readGit } from "./repos.js";
+import { findRepos, gitCommitSteps, listRows, readGit } from "./repos.js";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -77,6 +78,8 @@ export default class JjChanges extends View {
     });
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
+    this.grouped = localStorage.getItem("group-by-repo") === "1";
+    this.collapsed = new Set(); // repo roots whose files the grouped list hides
     this.ticks = 0;
     this.refresh(cx, { search: true });
     // The folder watch reports changes as they happen. The timer covers what it
@@ -297,6 +300,30 @@ export default class JjChanges extends View {
         .child(div().text_size(11).text_color(t.dim).child("Describe @, then start a new change")));
   }
 
+  toggleGroup(cx) {
+    this.grouped = !this.grouped;
+    localStorage.setItem("group-by-repo", this.grouped ? "1" : "0");
+    cx.notify();
+  }
+
+  repoRow(row, t, mono) {
+    return h_flex().id(`repo-${row.root}`).h(28).flex_none().px(6).gap(6).items_center().rounded(7).cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { this.collapsed.has(row.root) ? this.collapsed.delete(row.root) : this.collapsed.add(row.root); cx.notify(); })
+      .child(svg(`mods/workspace-chrome/chevron-${row.collapsed ? "right" : "down"}.svg`).size(11).flex_none().text_color(t.dim))
+      .child(div().flex_shrink(0).max_w(220).truncate().text_size(12).font_semibold().child(row.label))
+      .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).font_family(mono).child(row.kind === "jj" && row.head ? `jj @${row.head.change}` : row.kind))
+      .child(div().text_size(11).text_color(t.muted).child(String(row.count)))
+      .when(row.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${row.add}`))).when(row.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${row.del}`)));
+  }
+
+  fileRow({ file: f, text }, t, indent) {
+    const parts = text.split("/"), name = parts.pop();
+    return h_flex().id(`change-${f.key}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(indent, (e) => e.pl(25)).when(this.open === f.key, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.key, cx))
+      .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" || f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
+      .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
+      .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
+  }
+
   render(cx) {
     if (key() !== this.context) this.refresh(cx);
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
@@ -304,6 +331,8 @@ export default class JjChanges extends View {
     const target = this.repos.find((r) => r.root === this.target);
     const spanned = new Set(this.files.map((f) => f.repo)).size;
     const failed = this.repos.filter((r) => r.error);
+    const grouping = this.grouped && this.repos.length > 1;
+    const rows = listRows(this.files, this.repos, { grouped: grouping, start: this.start, labelOf: (r) => this.label(r), collapsed: this.collapsed });
     return v_flex().id("jj-changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.menu) { this.menu = false; cx.stop_propagation(); cx.notify(); return; }
@@ -312,16 +341,15 @@ export default class JjChanges extends View {
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Changes"))
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files${spanned > 1 ? ` · ${spanned} repos` : ""}`))
-        .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)))
+        .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`))
+        .when(this.repos.length > 1, (e) => e.child(div().id("group-by-repo").size(24).flex().flex_none().items_center().justify_center().rounded(6).cursor_pointer()
+          .when(this.grouped, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).tooltip("Group by repository").on_click((_e, cx) => this.toggleGroup(cx))
+          .child(svg("mods/workspace-chrome/layers.svg").size(14).text_color(this.grouped ? t.foreground : t.dim)))))
       // overflow_y_scrollbar() wraps the list, so its flex sizing never reached the panel's layout.
-      .child(div().flex_1().min_h(44).max_h(this.files.length * 28 + 12).relative().border_b(1).border_color(t.border)
-        .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().p(6).children(this.files.map((f) => {
-        const parts = f.display.split("/"), name = parts.pop();
-        return h_flex().id(`change-${f.key}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.key, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.key, cx))
-          .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" || f.status === "U" ? t.ansi1 : t.blocked).child(f.status))
-          .child(h_flex().flex_1().min_w(0).child(div().text_color(t.dim).truncate().child(parts.length ? parts.join("/") + "/" : "")).child(div().max_w(260).min_w(0).truncate().child(name)))
-          .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
-      })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading && !this.repos.length ? "Loading changes…" : this.repos.length ? "No changes" : "No folder")))))
+      .child(div().flex_1().min_h(44).max_h(rows.length * 28 + 12).relative().border_b(1).border_color(t.border)
+        .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().p(6)
+          .children(rows.map((row) => (row.type === "repo" ? this.repoRow(row, t, mono) : this.fileRow(row, t, grouping))))
+          .when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading && !this.repos.length ? "Loading changes…" : this.repos.length ? "No changes" : "No folder")))))
         .child(Scrollbar.vertical("changes-list").absolute().inset_0()))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
       .when(Boolean(this.truncated), el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child(`Stopped looking after ${this.repos.length} repositories`)))
