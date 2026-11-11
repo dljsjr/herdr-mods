@@ -9,7 +9,9 @@ const KIND = { BUG: 0, TASK: 1, SUBTASK: 2 };
 async function trail(exec, root, args) {
   const r = await exec("trail", ["--dir", root, "-f", "json", ...args], root);
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim() || `trail ${args.join(" ")} failed`);
-  return JSON.parse(r.stdout);
+  // With nothing to list, trail answers in plain text ("No projects found.")
+  // even when asked for JSON.
+  return /^\s*[[{]/.test(r.stdout) ? JSON.parse(r.stdout) : [];
 }
 
 const parentOf = (path) => path.slice(0, path.lastIndexOf("/")) || "/";
@@ -31,6 +33,15 @@ export async function findProject(exec, folder) {
     try { return { root, projects: await trail(exec, root, ["project", "list"]) }; } catch {}
   }
   return null;
+}
+
+// The absolute path of the project's tasks folder, from trail itself, since
+// its config can name any folder. null when there is none, or when the trail
+// on PATH predates --print-tasks-dir.
+export async function tasksDir(exec, root) {
+  const r = await exec("trail", ["--dir", root, "--print-tasks-dir"], root);
+  const path = r.stdout.trim();
+  return r.code === 0 && path ? path : null;
 }
 
 export const readTasks = (exec, root) => trail(exec, root, ["task", "list"]);

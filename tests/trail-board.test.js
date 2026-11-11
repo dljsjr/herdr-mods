@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { exec, must, removeTempDirs, tempDir } from "./jj-helpers.js";
-import { findProject, lanes, readTask, readTasks } from "../mods/trail-board/board.js";
+import { findProject, lanes, readTask, readTasks, tasksDir } from "../mods/trail-board/board.js";
 
 afterEach(removeTempDirs);
 
@@ -48,6 +48,17 @@ describe("findProject", () => {
 
     expect(found.root).toBe(dir);
     expect(found.projects.map((p) => p.key).sort()).toEqual(["BRD", "OPS"]);
+  });
+
+  test("finds a project with no tasks yet, where trail answers in plain text", async () => {
+    const dir = tempDir();
+    mkdirSync(join(dir, ".sandpiper", "tasks"), { recursive: true });
+    trail(dir, "project", "create", "NEW", "--name", "New", "--description", "d", "--when-to-read", "t");
+
+    const found = await findProject(exec, dir);
+
+    expect(found).toEqual({ root: dir, projects: [] });
+    expect(await readTasks(exec, dir)).toEqual([]);
   });
 
   test("returns null where trail finds no tasks", async () => {
@@ -105,5 +116,27 @@ describe("readTask", () => {
 
     expect(task.description).toContain("Do **it**.");
     expect(task.status).toBe("IN PROGRESS");
+  });
+});
+
+describe("tasksDir", () => {
+  test("is trail's answer to --print-tasks-dir, read from stdout", async () => {
+    const fake = async (command, args) => (args.includes("--print-tasks-dir")
+      ? { code: 0, stdout: "/p/boards/work\n", stderr: "" }
+      : { code: 1, stdout: "", stderr: "unexpected" });
+
+    expect(await tasksDir(fake, "/p")).toBe("/p/boards/work");
+  });
+
+  test("is null when trail can't say: no tasks folder, or a trail without the flag", async () => {
+    const failing = async () => ({ code: 1, stdout: "", stderr: "error: unknown option '--print-tasks-dir'" });
+
+    expect(await tasksDir(failing, "/p")).toBeNull();
+  });
+
+  test("with the trail on PATH, is the real tasks folder or null for an older trail", async () => {
+    const { dir } = board();
+
+    expect([null, join(dir, ".sandpiper", "tasks")]).toContain(await tasksDir(exec, dir));
   });
 });

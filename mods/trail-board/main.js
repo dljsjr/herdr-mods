@@ -10,7 +10,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Input, InputState, Scrollbar, TextView } from "gpui-base";
 import { spaces, panes, focused, exec, watchFolder, theme, settings, props, openOverlay, closeOverlay } from "herdr";
-import { findProject, lanes, readTask, readTasks } from "./board.js";
+import { findProject, lanes, readTask, readTasks, tasksDir } from "./board.js";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -45,8 +45,8 @@ export default class TrailBoard extends View {
     });
   }
 
-  // Until trail can say where its tasks folder is, watch the whole project and
-  // let a burst of changes become one refresh.
+  // Watches the tasks folder, or with a trail too old to name it, the whole
+  // project. A burst of changes becomes one refresh.
   watch(root, cx) {
     if (this.on || this.watched === root) return;
     this.watched = root;
@@ -74,7 +74,11 @@ export default class TrailBoard extends View {
     cx.spawn(async (cx) => {
       try {
         const sh = shell(on);
-        if (!this.found.has(cwd)) this.found.set(cwd, await findProject(sh, cwd));
+        if (!this.found.has(cwd)) {
+          const project = await findProject(sh, cwd);
+          if (project) project.tasksDir = await tasksDir(sh, project.root);
+          this.found.set(cwd, project);
+        }
         const project = this.found.get(cwd);
         if (key() !== context) return;
         if (!project) { this.project = null; this.tasks = []; this.error = "No Trail tasks here."; return; }
@@ -82,7 +86,7 @@ export default class TrailBoard extends View {
         if (key() !== context) return;
         this.project = project; this.on = on; this.tasks = tasks; this.error = null;
         if (this.filter && !tasks.some((t) => t.project === this.filter)) this.filter = null;
-        this.watch(project.root, cx);
+        this.watch(project.tasksDir ?? project.root, cx);
       } catch (e) {
         if (key() === context) { this.error = String(e.message ?? e); this.found.delete(cwd); }
       } finally {
