@@ -9,19 +9,20 @@ function blocks(node) {
   return [node, ...(node.children ?? []).flatMap(blocks)];
 }
 
-test("the jj layout is main with jj mods in the changes, spaces and tabs blocks, plus a graph panel", () => {
+test("the jj layout is main with jj mods in the changes, spaces and tabs blocks, plus graph and tasks panels", () => {
   const all = blocks(layout);
   const modOf = (id) => all.find((b) => b.id === id).content.mod;
 
   expect(layout.cloned_from.name).toBe("main");
   expect([modOf("changes"), modOf("spaces"), modOf("tabs")]).toEqual(["jj-changes", "jj-spaces", "jj-tabs"]);
   expect(all.filter((b) => ["changes", "spaces", "tabs"].includes(b.content?.mod))).toEqual([]);
-  expect(all.find((b) => b.id === "panel-body").children.map((b) => b.id)).toEqual(["files", "changes", "graph"]);
+  expect(all.find((b) => b.id === "panel-body").children.map((b) => b.id)).toEqual(["files", "changes", "graph", "tasks"]);
   expect(modOf("graph")).toBe("jj-graph");
+  expect(modOf("tasks")).toBe("trail-board");
 });
 
-test("every jj mod the layout names is in this repo", () => {
-  const named = blocks(layout).map((b) => b.content?.mod).filter((m) => m?.startsWith("jj-"));
+test("every mod of ours the layout names is in this repo", () => {
+  const named = blocks(layout).map((b) => b.content?.mod).filter((m) => m?.startsWith("jj-") || m === "trail-board");
 
   expect(named.filter((m) => !existsSync(join(root, "mods", m, "main.js")))).toEqual([]);
 });

@@ -147,6 +147,13 @@
                       "content": {
                         "mod": "jj-graph"
                       }
+                    },
+                    {
+                      "id": "tasks",
+                      "type": "block",
+                      "content": {
+                        "mod": "trail-board"
+                      }
                     }
                   ],
                   "active": "files"

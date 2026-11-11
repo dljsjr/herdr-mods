@@ -39,10 +39,23 @@ layouts in `layouts/<name>.json`.
   a bookmark that was never pushed, and `*N` for N changed files. A jj
   workspace sits under its repo's main workspace. Other Git repos look as
   they do in Herdr's sidebar. Right-click opens jj-menu.
+- **trail-board**: the Trail tasks of the focused
+  folder's project, from `trail` on your PATH. Lanes for Not started, In
+  progress and Needs review stack in the side panel and stand side by side
+  when the panel is wide or the board has a tab of its own. Cards show the
+  key, title, priority, a bug badge, assignee, subtasks done and blockers;
+  subtasks count on their parent rather than getting cards. Filter by project
+  or search; click a card for its description and subtasks. Open it from the
+  Tasks button, or as a tab:
+
+  ```sh
+  herdr-app do tab.new '{"name":"Tasks","mod":"trail-board"}'
+  ```
+
 - **jj-menu**, **jj-new-menu**, **jj-tabs**: the space right-click menu and
   the tab bar's `+` menu, with New, Open and Remove jj workspace where Herdr
   has its Git worktree items. In a git repo they keep Herdr's worktree items.
-  jj-tabs also has the Graph button.
+  jj-tabs also has the Graph and Tasks buttons.
 
 Inside a git repo nested in a jj repo, every mod treats the folder as git: the
 innermost repo wins.
@@ -57,7 +70,7 @@ says what it changed at the top of its `main.js`. Herdr won't update them.
 
 - **jj**: Herdr's `main` layout (from herdr-app 0.1.12) with jj-spaces,
   jj-tabs and jj-changes in place of Herdr's sidebar, tab bar and Changes
-  panel, and jj-graph as a third side panel. Herdr won't update this copy when `main` changes. Switch to it with
+  panel, and jj-graph and trail-board as further side panels. Herdr won't update this copy when `main` changes. Switch to it with
   the layout picker, or:
 
   ```sh
@@ -115,6 +128,8 @@ Apache License, Version 2.0:
   jj-tabs and jj-workspaces, each of which says at the top what it was derived
   from and what changed; a copy of the Apache license sits in each of those
   mod folders
+- the `location()` helper in trail-board's `main.js`, taken from Herdr's
+  Changes panel; trail-board's folder has a copy of the Apache license too
 - `layouts/jj.json`, a copy of Herdr's `main` layout with its Changes, sidebar
   and tab bar blocks pointed at these mods and a Graph panel added
 

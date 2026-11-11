@@ -21,6 +21,8 @@ Tools are pinned in `mise.toml`. Run `mise run test` (bun test) and `mise run li
 
 A mod cannot import from outside its own folder (`herdr-app check` rejects it). Code shared by the jj mods lives in `jj-repo.js`, copied into each mod that needs it; `tests/shared.test.js` fails when the copies differ. Doug's call (2026-11-02): copying is fine for now; consider a bundler if the shared code grows. Keep jj commands and output parsing in plain modules with no Herdr imports, and test them against real jj repos.
 
+`tests/trail-board.test.js` runs `trail` from PATH against temporary task folders.
+
 Tests run jj with `tests/jj-config.toml`, not the person's config: their watchman snapshot trigger would race the tests and leave watches on deleted folders. `Bun.spawnSync` keeps the environment the process started with, so every spawn in the tests passes `{ env: process.env }`. Register `afterEach(removeTempDirs)` in each test file that uses `tests/jj-helpers.js`.
 
 ## Test in a scratch window, never the live app
