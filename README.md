@@ -104,3 +104,19 @@ Tools are pinned in `mise.toml`.
 mise run test   # bun test
 mise run lint   # shellcheck
 ```
+
+## License
+
+MIT (see `LICENSE`), except for code derived from the
+[Herdr app](https://github.com/herdrdev/herdr-app), which stays under the
+Apache License, Version 2.0:
+
+- the `main.js` of jj-changes, jj-graph, jj-menu, jj-new-menu, jj-spaces,
+  jj-tabs and jj-workspaces, each of which says at the top what it was derived
+  from and what changed; a copy of the Apache license sits in each of those
+  mod folders
+- `layouts/jj.json`, a copy of Herdr's `main` layout with its Changes, sidebar
+  and tab bar blocks pointed at these mods and a Graph panel added
+
+jj-graph's `lanes.js` follows the approach of
+[herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph) (MIT).
