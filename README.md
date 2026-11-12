@@ -99,8 +99,11 @@ It refuses to:
 
 `--force` allows the last two. It never touches anything it did not install.
 
-If a running Herdr window shows a layout that `uninstall` removes, the installer
-switches that window to `main` first.
+The first time `install` adds a layout, it switches a running Herdr window to
+it, or, with no window running, prints the command that does. Herdr remembers
+the shown layout in its own state, so later installs and upgrades never switch
+again. If a running window shows a layout that `uninstall` removes, the
+installer switches that window to `main` first.
 
 ## Versions
 

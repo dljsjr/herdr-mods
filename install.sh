@@ -218,6 +218,18 @@ install_staged() {
 	esac
 }
 
+# Herdr shows a layout only once something switches to it, and it remembers
+# the choice in its own state, so a layout installed for the first time is
+# switched to once. Upgrades leave the person's choice alone.
+switch_to_new() {
+	if HERDR_APP_HOME=$app_home herdr-app status >/dev/null 2>&1 &&
+		HERDR_APP_HOME=$app_home herdr-app 'do' layout.switch "{\"name\":\"$name\"}" >/dev/null 2>&1; then
+		echo "$item: switched the open window to it"
+	else
+		echo "$item: to show it, open Herdr and run: herdr-app do layout.switch '{\"name\":\"$name\"}'"
+	fi
+}
+
 # A running window keeps showing a layout after its file is gone, along with
 # the mods it uses, so move that window to main first.
 switch_away() {
@@ -292,6 +304,9 @@ cmd_install() {
 			install_staged
 		fi
 		echo "$item: $message"
+		case $item/$message in
+		layouts/*/installed\ *) switch_to_new ;;
+		esac
 	done <"$tmp/plan"
 }
 

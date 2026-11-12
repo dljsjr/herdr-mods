@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -48,8 +48,36 @@ function writeLayout(repo, name, { version = "0.1.0", mod = "demo" } = {}) {
 }
 
 function run(repo, ...args) {
-  const result = Bun.spawnSync(["sh", join(repo, "install.sh"), ...args], { env: process.env });
+  return runWith(process.env, repo, ...args);
+}
+
+function runWith(env, repo, ...args) {
+  const result = Bun.spawnSync(["sh", join(repo, "install.sh"), ...args], { env });
   return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+}
+
+// A herdr-app on PATH that passes check to the real one, answers status as if
+// a window were running when `window` is set, and logs every do command.
+function fakeHerdr({ window }) {
+  const bin = tempDir("herdr-app-fake-");
+  const real = Bun.which("herdr-app");
+  const log = join(bin, "do.log");
+  const status = window
+    ? `printf '{\\n  "layout": "main",\\n  "errors": []\\n}\\n'; exit 0`
+    : `echo "herdr-app: no Herdr window" >&2; exit 2`;
+  writeFileSync(join(bin, "herdr-app"), [
+    "#!/bin/sh",
+    'case "$1" in',
+    `check) exec "${real}" "$@" ;;`,
+    `status) ${status} ;;`,
+    `do) shift; printf '%s\\n' "$*" >> "${log}"; exit 0 ;;`,
+    "esac",
+    "exit 2",
+    "",
+  ].join("\n"));
+  chmodSync(join(bin, "herdr-app"), 0o755);
+  const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
+  return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, calls };
 }
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
@@ -258,7 +286,8 @@ describe("layouts", () => {
     const result = run(repo, "install", "--app-home", home);
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toBe("mods/demo: installed 0.1.0\nlayouts/jj: installed 0.1.0\n");
+    // No Herdr window runs for a temporary app home, so the install ends with a hint.
+    expect(result.stdout).toBe(`mods/demo: installed 0.1.0\nlayouts/jj: installed 0.1.0\nlayouts/jj: to show it, open Herdr and run: herdr-app do layout.switch '{"name":"jj"}'\n`);
     expect(readFileSync(join(home, "layouts", "jj.json"), "utf8")).toBe(layoutJson("demo"));
     expect(existsSync(join(home, "layouts", "jj.VERSION"))).toBe(false);
     const manifest = readFileSync(join(home, "layouts", ".jj.herdr-mods"), "utf8").split("\n");
@@ -305,6 +334,43 @@ describe("layouts", () => {
     expect(result.stdout).toBe("layouts/jj: uninstalled 0.1.0\nmods/demo: uninstalled 0.1.0\n");
     expect(existsSync(join(home, "layouts", "jj.json"))).toBe(false);
     expect(existsSync(join(home, "layouts", ".jj.herdr-mods"))).toBe(false);
+  });
+
+  test("switches a running window to a layout the first time it is installed", () => {
+    const repo = makeRepo({ demo: {} }, { jj: {} });
+    const home = tempDir("herdr-app-home-");
+    const herdr = fakeHerdr({ window: true });
+
+    const result = runWith(herdr.env, repo, "install", "--app-home", home);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("layouts/jj: installed 0.1.0\nlayouts/jj: switched the open window to it\n");
+    expect(herdr.calls()).toEqual(['layout.switch {"name":"jj"}']);
+  });
+
+  test("with no window running, says how to switch to a new layout", () => {
+    const repo = makeRepo({}, { jj: {} });
+    const home = tempDir("herdr-app-home-");
+    const herdr = fakeHerdr({ window: false });
+
+    const result = runWith(herdr.env, repo, "install", "--app-home", home);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(`layouts/jj: to show it, open Herdr and run: herdr-app do layout.switch '{"name":"jj"}'`);
+    expect(herdr.calls()).toEqual([]);
+  });
+
+  test("never switches on an upgrade, so a later choice of layout stands", () => {
+    const repo = makeRepo({}, { jj: {} });
+    const home = tempDir("herdr-app-home-");
+    run(repo, "install", "--app-home", home);
+    writeFileSync(join(repo, "layouts", "jj.VERSION"), "0.2.0\n");
+    const herdr = fakeHerdr({ window: true });
+
+    const result = runWith(herdr.env, repo, "install", "--app-home", home);
+
+    expect(result.stdout).toBe("layouts/jj: upgraded 0.1.0 -> 0.2.0\n");
+    expect(herdr.calls()).toEqual([]);
   });
 
   test("rejects a layout without a valid VERSION file", () => {
