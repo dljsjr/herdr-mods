@@ -1,0 +1,11 @@
+# Tests run git with this config instead of the person's, so commit signing,
+# hooks and pagers from their setup don't reach the tests.
+[user]
+	name = herdr-mods tests
+	email = tests@herdr-mods.invalid
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false
+[init]
+	defaultBranch = main
