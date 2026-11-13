@@ -141,8 +141,9 @@ describe("parseDiff", () => {
 
     const [file] = parseDiff(jj(repo, DIFF_ARGS));
 
-    expect(file.lines).toEqual([
-      "@@ -1,2 +1,2 @@",
+    // jj 0.47 and later add function context after the header's ranges.
+    expect(file.lines[0]).toStartWith("@@ -1,2 +1,2 @@");
+    expect(file.lines.slice(1)).toEqual([
       " same",
       "-old",
       "\\ No newline at end of file",

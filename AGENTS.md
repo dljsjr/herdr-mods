@@ -17,7 +17,7 @@ Every mod has a `VERSION` file holding `MAJOR.MINOR.PATCH`, and every layout has
 
 `layouts/jj.json` is a `layout.clone` of `main` with one change. To change it, edit that file directly; don't regenerate it from a newer `main` unless that's the task.
 
-Tools are pinned in `mise.toml`. Run `mise run test` (bun test) and `mise run lint` (shellcheck) after changing `install.sh` or any mod's jj code.
+Tools are pinned in `mise.toml`. jj is set to `latest` inside the `test` task only, so run the tests with `mise run test`, not a bare `bun test`; jj under `[tools]` would replace Doug's own jj in this folder. Run `mise run test` and `mise run lint` (shellcheck) after changing `install.sh` or any mod's jj code. When a jj release changes its output, fix what the tests catch.
 
 A mod cannot import from outside its own folder (`herdr-app check` rejects it). Code shared by the jj mods lives in `jj-repo.js`, copied into each mod that needs it; `tests/shared.test.js` fails when the copies differ. Doug's call (2026-11-02): copying is fine for now; consider a bundler if the shared code grows. Keep jj commands and output parsing in plain modules with no Herdr imports, and test them against real jj repos.
 
