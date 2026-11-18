@@ -8,5 +8,9 @@ shellcheck = "0.11.0"
 tools = { jj = "latest" }
 run = "bun test"
 
+[tasks.check]
+description = "herdr-app check on every mod"
+run = 'for m in mods/*/; do herdr-app check "$m" || exit 1; done'
+
 [tasks.lint]
 run = "shellcheck -s sh install.sh"

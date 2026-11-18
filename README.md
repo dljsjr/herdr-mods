@@ -90,8 +90,8 @@ you name, such as `mods/jj-changes` or `layouts/jj`. Add `--app-home DIR` to
 target another app home. The default is `$HERDR_APP_HOME`, then
 `~/.config/herdr-app`.
 
-The installer runs `herdr-app check` on every mod before it changes anything.
-It refuses to:
+The installer only copies, so it works without a display; mods are checked
+with `herdr-app check` during development. It refuses to:
 
 - overwrite a mod or layout it did not install
 - replace or remove files you edited in the installed copy
@@ -119,6 +119,7 @@ Tools are pinned in `mise.toml`.
 ```sh
 mise run test   # bun test
 mise run lint   # shellcheck
+mise run check  # herdr-app check on every mod
 ```
 
 ## License

@@ -160,16 +160,20 @@ describe("install", () => {
     expect(run(repo, "status", "--app-home", home).stdout).toBe("mods/demo: same 0.1.0\n");
   });
 
-  test("installs nothing when any mod fails herdr-app check", () => {
-    const repo = makeRepo({ broken: { main: "this is not javascript {{{\n" }, demo: {} });
+  // Mods are checked during development (mise run check). Installing must also
+  // work where herdr-app can't start, such as a headless machine.
+  test("installs where herdr-app can't run", () => {
+    const repo = makeRepo();
     const home = tempDir("herdr-app-home-");
+    const bin = tempDir("herdr-app-broken-");
+    writeFileSync(join(bin, "herdr-app"), "#!/bin/sh\necho 'cannot open display' >&2\nexit 127\n");
+    chmodSync(join(bin, "herdr-app"), 0o755);
 
-    const result = run(repo, "install", "--app-home", home);
+    const result = runWith({ ...process.env, PATH: `${bin}:${process.env.PATH}` }, repo, "install", "--app-home", home);
 
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("mods/broken: herdr-app check failed");
-    expect(result.stderr).toContain("nothing was installed");
-    expect(existsSync(join(home, "mods", "demo"))).toBe(false);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("mods/demo: installed 0.1.0\n");
+    expect(readFileSync(join(home, "mods", "demo", "main.js"), "utf8")).toBe(demoMain);
   });
 
   test("refuses a foreign folder even with --force and leaves it alone", () => {

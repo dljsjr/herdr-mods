@@ -182,15 +182,6 @@ repo_changed() {
 	[ "$(hash_files "$staged")" != "$(grep '^file=' "$manifest")" ]
 }
 
-check_staged() {
-	[ "$kind" = mods ] || return 0
-	mkdir -p "$tmp/check-home"
-	if ! HERDR_APP_HOME=$tmp/check-home HOME=$tmp/check-home herdr-app check "$staged" >"$tmp/check.log" 2>&1; then
-		cat "$tmp/check.log" >&2
-		return 1
-	fi
-}
-
 write_manifest() {
 	{
 		echo "format=$manifest_format"
@@ -250,7 +241,9 @@ remove_installed() {
 	esac
 }
 
-# Stages and checks every item first, so a refusal leaves the app home unchanged.
+# Stages every item first, so a refusal leaves the app home unchanged. Mods
+# are checked during development (mise run check), not here: herdr-app check
+# opens a hidden window, which a headless machine can't.
 cmd_install() {
 	refused=''
 	: >"$tmp/plan"
@@ -288,10 +281,6 @@ cmd_install() {
 				continue
 			fi
 			message="$message, repo changed without a version bump"
-		fi
-		if ! check_staged; then
-			refuse "$item: herdr-app check failed"
-			continue
 		fi
 		write_manifest
 		echo "$item copy $message" >>"$tmp/plan"

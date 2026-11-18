@@ -43,7 +43,7 @@ In a `v_virtual_list`, the row renderer can't attach handlers: `on_click` and th
 
 For `window.paint_path`, give `PathBuilder` coordinates as percentages of the painted bounds. Pixel coordinates don't scale with Herdr's zoom the way element sizes do, so lines drift off the elements they should meet.
 
-After every mod change, run `herdr-app check <mod folder>`. Then install it into the scratch app home, run `status` and `shot` against the scratch window, and look at the picture.
+After every mod change, run `herdr-app check <mod folder>` (`mise run check` checks every mod; `install.sh` no longer does). Then install it into the scratch app home, run `status` and `shot` against the scratch window, and look at the picture.
 
 ## Internal context
 
