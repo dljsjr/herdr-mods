@@ -9,10 +9,11 @@ afterEach(removeTempDirs);
 const trail = (dir, ...args) => must(["--dir", dir, ...args], dir, "trail");
 
 // A folder with Trail tasks: project BRD with a mix of statuses, kinds and
-// priorities, one task with subtasks, and project OPS with one task.
+// priorities, one task with subtasks, and project OPS with one task. The tasks
+// folder isn't trail's default, so only asking trail finds it.
 function board() {
   const dir = tempDir();
-  mkdirSync(join(dir, ".sandpiper", "tasks"), { recursive: true });
+  trail(dir, "initialize", "--no-vcs", "--tasks-dir", "boards/work");
   for (const [key, name] of [["BRD", "Board"], ["OPS", "Operations"]]) {
     trail(dir, "project", "create", key, "--name", name, "--description", `${name} work`, "--when-to-read", "tests");
   }
@@ -29,13 +30,13 @@ function board() {
   const ops = create("Ops task", "-p", "OPS", "--priority", "MEDIUM");
   trail(dir, "task", "pickup", high);
   trail(dir, "task", "pickup", sub2);
-  trail(dir, "task", "complete", sub2);
-  trail(dir, "task", "complete", sub2, "--final", "--resolution", "DONE");
+  trail(dir, "task", "update", sub2, "--status", "NEEDS REVIEW");
+  trail(dir, "task", "complete", sub2, "--resolution", "DONE");
   trail(dir, "task", "pickup", done);
-  trail(dir, "task", "complete", done);
-  trail(dir, "task", "complete", done, "--final", "--resolution", "DONE");
+  trail(dir, "task", "update", done, "--status", "NEEDS REVIEW");
+  trail(dir, "task", "complete", done, "--resolution", "DONE");
   trail(dir, "task", "pickup", ops);
-  trail(dir, "task", "complete", ops);
+  trail(dir, "task", "update", ops, "--status", "NEEDS REVIEW");
   return { dir, low, bug, high, done, ops };
 }
 
@@ -52,7 +53,7 @@ describe("findProject", () => {
 
   test("finds a project with no tasks yet, where trail answers in plain text", async () => {
     const dir = tempDir();
-    mkdirSync(join(dir, ".sandpiper", "tasks"), { recursive: true });
+    trail(dir, "initialize", "--no-vcs");
     trail(dir, "project", "create", "NEW", "--name", "New", "--description", "d", "--when-to-read", "t");
 
     const found = await findProject(exec, dir);
@@ -134,9 +135,9 @@ describe("tasksDir", () => {
     expect(await tasksDir(failing, "/p")).toBeNull();
   });
 
-  test("with the trail on PATH, is the real tasks folder or null for an older trail", async () => {
+  test("with the trail on PATH, is the real tasks folder", async () => {
     const { dir } = board();
 
-    expect([null, join(dir, ".sandpiper", "tasks")]).toContain(await tasksDir(exec, dir));
+    expect(await tasksDir(exec, dir)).toBe(join(dir, "boards", "work"));
   });
 });
