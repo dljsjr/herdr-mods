@@ -2,9 +2,9 @@
 // the focused folder.
 //
 // Derived from defaults/mods/changes/main.js in herdr-app 0.1.12, with its
-// 0.1.14 fixes merged in (https://github.com/herdrdev/herdr-app), licensed
-// under the Apache License, Version 2.0. See LICENSE-Apache-2.0.txt beside
-// this file.
+// fixes through 0.1.16 merged in (https://github.com/herdrdev/herdr-app),
+// licensed under the Apache License, Version 2.0. See LICENSE-Apache-2.0.txt
+// beside this file.
 //
 // Changed from the original: it lists the changed files of the repo containing
 // the focused folder and of every repo below it (repos.js finds them, ignore
@@ -46,6 +46,9 @@ async function eachLimited(items, limit, fn) {
   }));
 }
 
+// Text draws a tab as nothing: pad each to the next 4-column stop.
+const untab = (text) => text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
+
 // Numbers each diff line once, so a frame only draws the rows on screen.
 function diffRows(lines) {
   let old = 0, next = 0;
@@ -53,9 +56,9 @@ function diffRows(lines) {
     const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
     if (match) { old = +match[1]; next = +match[2]; return { kind: "@", text: line }; }
     const kind = line[0];
-    if (kind === "-") return { kind, number: old++, text: line.slice(1) || " " };
-    if (kind === "+") return { kind, number: next++, text: line.slice(1) || " " };
-    if (kind === " ") { old++; return { kind, number: next++, text: line.slice(1) || " " }; }
+    if (kind === "-") return { kind, number: old++, text: untab(line.slice(1)) || " " };
+    if (kind === "+") return { kind, number: next++, text: untab(line.slice(1)) || " " };
+    if (kind === " ") { old++; return { kind, number: next++, text: untab(line.slice(1)) || " " }; }
     return { kind: "", text: line };
   });
 }
@@ -231,7 +234,7 @@ export default class JjChanges extends View {
 
   setLines(lines) {
     this.rows = diffRows(lines);
-    this.diffWidth = Math.max(300, ...lines.map(line => line.length * 7 + 50));
+    this.diffWidth = Math.max(300, ...this.rows.map(row => (row.text.length + 1) * 7 + 50));
   }
 
   pick(fileKey, cx) {

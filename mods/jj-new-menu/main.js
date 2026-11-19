@@ -1,6 +1,7 @@
-// jj-new-menu: derived from defaults/mods/new-menu/main.js in herdr-app 0.1.12
-// (https://github.com/herdrdev/herdr-app), licensed under the Apache License,
-// Version 2.0. See LICENSE-Apache-2.0.txt beside this file.
+// jj-new-menu: derived from defaults/mods/new-menu/main.js in herdr-app 0.1.12,
+// with its fixes through 0.1.16 merged in (https://github.com/herdrdev/herdr-app),
+// licensed under the Apache License, Version 2.0. See LICENSE-Apache-2.0.txt
+// beside this file.
 //
 // Changed from the original: in a jj repo, New and Open jj workspace replace New
 // and Open worktree, opening the jj-workspaces dialog; a git repo keeps them.
@@ -68,8 +69,8 @@ export default class NewMenu extends View {
     const space = spaces().find(s => s.active);
     const mod = this.git ? "worktree" : "jj-workspaces", noun = this.git ? "worktree" : "jj workspace";
     const installed = this.agents.filter(a => a.installed);
-    const choices = [...installed, ...this.agents.filter(a => !a.installed).slice(0, 2)];
-    return v_flex().min_h(0).w_full().h(Math.min(491, 167 + Math.max(1, choices.length) * 31)).bg(t.popover).p(5).text_size(12.8)
+    const choices = this.failed ? installed : [...installed, ...this.agents.filter(a => !a.installed).slice(0, 2)];
+    return v_flex().min_h(0).w_full().h(Math.min(491, 167 + Math.max(1, choices.length + (this.failed ? 1 : 0)) * 31)).bg(t.popover).p(5).text_size(12.8)
       .id("new-menu").track_focus(this.handle)
       .on_key_down((e) => {
         if (e.modifiers.control || e.modifiers.platform || e.modifiers.alt) return;
@@ -83,7 +84,7 @@ export default class NewMenu extends View {
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
         .children(choices.map((a, i) => this.row(a.key, a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14), a.name,
           () => run("tab.new", { name: a.name, space: space?.id, argv: a.run }), a.installed ? (i < 9 ? String(i + 1) : "") : "not installed", a.installed)))
-        .when(this.agents.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim).child(this.failed ? "Could not load agents" : "Checking installed agents…"))))
+        .when(this.failed || this.agents.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim).child(this.failed ? "Could not check installed agents" : "Checking installed agents…"))))
       .child(div().h(1).mx(4).my(5).bg(t.border))
       .child(this.row("space", div().w(14).child("+"), "New space", () => run("space.new"), shortcut("space.new")))
       .child(this.row("workspace-new", svg("mods/workspace-chrome/branch.svg").size(14), `New ${noun}…`, () => openOverlay({ mod, kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))

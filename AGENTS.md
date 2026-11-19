@@ -37,8 +37,6 @@ Never install, reload or experiment with mods against the person's running Herdr
 
 Do not set `XDG_STATE_HOME`. Shells in the scratch window inherit it and leave stray daemons such as watchman behind. `HC_SESSION` alone separates the core's state.
 
-`herdr-app shot` saves the last frame the window drew. A scratch window behind other windows can stop drawing, so every shot repeats an old frame. If two shots taken after a visible change are identical, relaunch the scratch window before trusting a screenshot.
-
 In a `v_virtual_list`, the row renderer can't attach handlers: `on_click` and the rest throw there, and the list draws nothing, without an error in `herdr-app status`. Use the list's `on_item_click` and `on_item_secondary_click`, which get the row's key.
 
 For `window.paint_path`, give `PathBuilder` coordinates as percentages of the painted bounds. Pixel coordinates don't scale with Herdr's zoom the way element sizes do, so lines drift off the elements they should meet.

@@ -7,8 +7,10 @@
 // (https://github.com/herdrdev/herdr-app), licensed under the Apache License,
 // Version 2.0. See LICENSE-Apache-2.0.txt beside this file.
 //
-// It also carries the original's 0.1.14 fixes: spaces and panes are read once
-// per render, long commands may run 10 minutes, and a spinner shows while busy.
+// It also carries the original's 0.1.14 and 0.1.15 fixes: spaces and panes are
+// read once per render, long commands may run 10 minutes, a spinner shows while
+// busy, the dialog takes the keyboard after a slow load, and a new space opens
+// on this machine even while another machine's terminal is focused.
 //
 // Changed from the original: it manages jj workspaces instead of Git
 // worktrees, following the old herdr-jj plugin (commands in workspaces.js).
@@ -60,16 +62,13 @@ export default class JjWorkspaces extends View {
     this.inputFocused = true;
     this.input.on("focus", (_e, cx) => { this.inputFocused = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.inputFocused = false; cx.notify(); });
-    if (props()?.action !== "remove") {
-      this.input.focus();
-      cx.timer.after(600, () => this.input.focus());
-    }
+    this.handle = cx.focus_handle();
+    this.handle.focus(); // the root is mounted from the first frame: keep the keyboard here while loading
+    if (props()?.action !== "remove") this.input.focus();
     this.busy = false;
     this.error = "";
     this.repo = undefined; // undefined: looking, null: not in jj
     this.name = ""; // remove: the workspace's jj name
-    this.handle = cx.focus_handle();
-    if (props()?.action === "remove") this.handle.focus();
     cx.spawn(async (cx) => {
       try {
         if (this.on) {
@@ -85,6 +84,11 @@ export default class JjWorkspaces extends View {
         this.repo = repo;
       } catch (error) { this.repo = null; this.error = String(error.message ?? error); }
       cx.notify();
+      // The list (and with it the filter input) only mounts once loading is
+      // done, so the keyboard must move there now — a focus call made while
+      // loading lands on nothing and the dialog stays keyboard-dead.
+      this.handle.focus();
+      if (this.repo && props().action !== "remove") cx.timer.after(100, () => this.input.focus());
     });
   }
 
@@ -121,7 +125,7 @@ export default class JjWorkspaces extends View {
     const path = await createWorkspace(this.sh, this.repo, this.userHome, name, props().revision);
     const p = props();
     // Leave spaces unnamed so they follow the checkout folder and nest under the repo.
-    run("space.new", { folder: path, machine: this.on, tab: p.tab, argv: p.argv });
+    run("space.new", { folder: path, machine: this.on ?? "", tab: p.tab, argv: p.argv });
   }
 
   shown() {
@@ -136,7 +140,7 @@ export default class JjWorkspaces extends View {
     this.close();
     const s = spaceOf(c.root, this.list, this.on, spaces(), panes());
     if (s) run("space.select", { id: s.id });
-    else run("space.new", { folder: c.root, machine: this.on });
+    else run("space.new", { folder: c.root, machine: this.on ?? "" });
   }
 
   async remove() {
