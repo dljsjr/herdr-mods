@@ -54,9 +54,17 @@ export async function readTask(exec, root, key) {
   return Array.isArray(task) ? task[0] : task;
 }
 
+// Tasks by key: project, then number. Herdr's script engine ignores
+// localeCompare's numeric option, so the number is compared as a number.
+export function keyOrder(a, b) {
+  const [, pa, na] = /^(.*)-(\d+)$/.exec(a.key) ?? [, a.key, "0"];
+  const [, pb, nb] = /^(.*)-(\d+)$/.exec(b.key) ?? [, b.key, "0"];
+  return pa < pb ? -1 : pa > pb ? 1 : Number(na) - Number(nb);
+}
+
 const byRank = (a, b) => (PRIORITY[a.priority] ?? 9) - (PRIORITY[b.priority] ?? 9)
   || (KIND[a.kind] ?? 9) - (KIND[b.kind] ?? 9)
-  || a.key.localeCompare(b.key, undefined, { numeric: true });
+  || keyOrder(a, b);
 
 // The board: { lanes: [{ status, cards }], complete } for the open statuses,
 // each card a task plus { subtasks: { done, total } } when it has any.
@@ -124,4 +132,42 @@ export async function createTask(exec, root, { project, title, kind = "TASK", pr
   const [task] = await trail(exec, root, args);
   if (assignee !== "UNASSIGNED") await act(exec, root, task.key, { op: "assign", value: assignee });
   return task.key;
+}
+
+// The card a keyboard move from `key` selects in `lanes` (the board's lanes,
+// with a folded lane's cards left out): up and down walk a lane and carry on
+// into the next lane with cards; left and right go to the nearest lane with
+// cards, at the same place or its last card. With nothing selected, the
+// first card; null on an empty board.
+export function neighbor(lanes, key, direction) {
+  const full = lanes.filter((l) => l.cards.length);
+  if (!full.length) return null;
+  const li = full.findIndex((l) => l.cards.some((c) => c.key === key));
+  if (li < 0) return full[0].cards[0].key;
+  const cards = full[li].cards, ci = cards.findIndex((c) => c.key === key);
+  if (direction === "up") return ci > 0 ? cards[ci - 1].key : li > 0 ? full[li - 1].cards.at(-1).key : key;
+  if (direction === "down") return ci < cards.length - 1 ? cards[ci + 1].key : li < full.length - 1 ? full[li + 1].cards[0].key : key;
+  const next = full[li + (direction === "left" ? -1 : 1)];
+  return next ? next.cards[Math.min(ci, next.cards.length - 1)].key : key;
+}
+
+// What changed between two reads of a board, for a notice: { key, text } per
+// change to what a card shows (status, assignee, priority, title), then
+// tasks added and removed.
+export function changes(before, after) {
+  const old = new Map(before.map((t) => [t.key, t]));
+  const out = [];
+  const say = (key, text) => out.push({ key, text });
+  for (const t of after) {
+    const was = old.get(t.key);
+    if (!was) continue;
+    if (was.status !== t.status) say(t.key, t.status === "COMPLETE" ? `${t.key} closed as ${t.resolution}` : `${t.key} moved to ${(STATUS_NAMES[t.status] ?? t.status).toLowerCase()}`);
+    if (was.assignee !== t.assignee) say(t.key, t.assignee === "UNASSIGNED" ? `${t.key} unassigned` : `${t.key} assigned to ${t.assignee}`);
+    if (was.priority !== t.priority) say(t.key, `${t.key} priority ${t.priority.toLowerCase()}`);
+    if (was.title !== t.title) say(t.key, `${t.key} renamed: ${t.title}`);
+  }
+  for (const t of after) if (!old.has(t.key)) say(t.key, `${t.key} added: ${t.title}`);
+  const now = new Set(after.map((t) => t.key));
+  for (const t of before) if (!now.has(t.key)) say(t.key, `${t.key} removed`);
+  return out;
 }

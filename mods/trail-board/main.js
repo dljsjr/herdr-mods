@@ -3,15 +3,21 @@
 // sections in a narrow panel and stand side by side when it is wide. Click a
 // card for its details and right-click it for its menu; + makes a task. This
 // mod draws those too, as overlays with props { role: "detail" | "menu" |
-// "create", root, on, ... }.
+// "create", root, on, ... }. Drag a card to another lane to change its status.
+// Changes made elsewhere (an agent, the CLI) show as a notification.
+//
+// Keys, once the board has the keyboard (click it, or pane.go: it is
+// focusable): arrows (or h j k l) select a card, Enter opens it, m opens its
+// menu, Shift+Left/Right moves it a lane, n makes a task, / searches, Esc
+// clears. keys.json can bind trail-board.new and trail-board.focus.
 //
 // location() follows defaults/mods/changes in herdr-app 0.1.12
 // (https://github.com/herdrdev/herdr-app), licensed under the Apache License,
 // Version 2.0. See LICENSE-Apache-2.0.txt beside this file.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Input, InputState, Scrollbar, TextView, Textarea, TextareaState } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, settings, props, openOverlay, closeOverlay, shared, setShared } from "herdr";
-import { ASSIGNEES, PRIORITIES, STATUS_NAMES, act, createTask, findProject, lanes, menuItems, readTask, readTasks, tasksDir } from "./board.js";
+import { v_flex, h_flex, Input, InputState, Scrollbar, ScrollHandle, TextView, Textarea, TextareaState } from "gpui-base";
+import { spaces, panes, focused, exec, watchFolder, theme, settings, props, openOverlay, closeOverlay, shared, setShared, notify, nextCommand } from "herdr";
+import { ASSIGNEES, PRIORITIES, STATUSES, STATUS_NAMES, act, changes, createTask, findProject, keyOrder, lanes, menuItems, neighbor, readTask, readTasks, tasksDir } from "./board.js";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -30,9 +36,18 @@ const META = /\/\.(git|jj)(\/|$)/;
 // that project refreshes at once: a remote machine has no folder watch.
 const WROTE = "trail-board.wrote";
 const wrote = (root, keys) => setShared(WROTE, { root, keys, at: Date.now() });
+// A board doesn't announce a change it made itself for this long.
+const OWN_MS = 15000;
+// The last notice, so several boards on one project post it once.
+const NOTICED = "trail-board.noticed";
+const DRAG_PX = 5;
+// An overlay that closes gives the keyboard back to the board that opened
+// it, if that board had it then; not when a click beside it closed it, since
+// that click put the keyboard where it wanted it.
+const CLOSED = "trail-board.closed";
 
-function openCreate({ root, on, projects, project, parent = null }) {
-  openOverlay({ mod: "trail-board", kind: "dialog", width: 520, height: 480, props: { role: "create", root, on, projects, project, parent } });
+function openCreate({ root, on, projects, project, parent = null, from = null }) {
+  openOverlay({ mod: "trail-board", kind: "dialog", width: 520, height: 480, props: { role: "create", root, on, projects, project, parent, from } });
 }
 
 export default class TrailBoard extends View {
@@ -42,13 +57,30 @@ export default class TrailBoard extends View {
     if (props()?.role === "menu") return this.initMenu(cx);
     if (props()?.role === "create") return this.initCreate(cx);
     this.seenWrite = shared(WROTE)?.at;
+    this.id = `board-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     this.tasks = []; this.project = null; this.filter = null; this.query = ""; this.width = 0;
     this.collapsed = new Set(); // lanes a narrow board folds
     this.found = new Map(); // folder -> its trail project, once looked up
     this.search = InputState.new({ placeholder: "Search tasks" });
     this.search.on("change", (_e, cx) => { this.query = this.search.value(); cx.notify(); });
+    this.search.on("focus", () => { this.typing = true; });
+    this.search.on("blur", () => { this.typing = false; });
+    this.own = new Map(); // key -> when this board's write changed it
+    this.selected = null; // the keyboard's card
+    this.press = null; // a card pressed, and whether it has moved into a drag
+    this.over = null; // the lane a drag is over
+    this.listScroll = ScrollHandle.new();
+    this.laneScroll = Object.fromEntries(STATUSES.map((s) => [s, ScrollHandle.new()]));
     this.ticks = 0;
     this.refresh(cx);
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command === "focus") this.handle.focus();
+        else if (command === "new") this.newTask();
+        cx.notify();
+      }
+    });
     // The folder watch reports changes; the timer covers remote machines.
     cx.timer.every(10000, (cx) => {
       this.ticks++;
@@ -95,6 +127,7 @@ export default class TrailBoard extends View {
         if (!project) { this.project = null; this.tasks = []; this.error = "No Trail tasks here."; return; }
         const tasks = await readTasks(sh, project.root);
         if (key() !== context) return;
+        if (this.project?.root === project.root) this.announce(this.tasks, tasks, project.root);
         this.project = project; this.on = on; this.tasks = tasks; this.error = null;
         if (this.filter && !tasks.some((t) => t.project === this.filter)) this.filter = null;
         this.watch(project.tasksDir ?? project.root, cx);
@@ -107,26 +140,153 @@ export default class TrailBoard extends View {
     });
   }
 
+  // Posts what changed since the last read, leaving out this board's own writes.
+  announce(before, after, root) {
+    const now = Date.now();
+    for (const [k, at] of this.own) if (now - at > OWN_MS) this.own.delete(k);
+    const lines = changes(before, after).filter((c) => !this.own.has(c.key)).map((c) => c.text);
+    if (!lines.length) return;
+    const signature = `${root}\n${lines.join("\n")}`, last = shared(NOTICED);
+    if (last?.signature === signature && now - last.at < 5000) return;
+    setShared(NOTICED, { signature, at: now });
+    const name = root.split("/").pop();
+    notify(lines.length === 1
+      ? { title: lines[0], body: name, level: "info" }
+      // The toast shows the body on one line and cuts it where it must.
+      : { title: `${lines.length} task changes in ${name}`, body: lines.join(" \u00b7 "), level: "info" });
+  }
+
+  // A drag or Shift+arrow: the card moves at once, and back if trail refuses.
+  move(cardKey, status, cx) {
+    const { root } = this.project, on = this.on ?? null;
+    this.tasks = this.tasks.map((x) => (x.key === cardKey ? { ...x, status } : x));
+    this.own.set(cardKey, Date.now());
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await act(shell(on), root, cardKey, { op: "status", value: status });
+        wrote(root, [cardKey]);
+      } catch (e) {
+        notify({ title: `Couldn't move ${cardKey}`, body: String(e.message ?? e), level: "error" });
+        this.refresh(cx);
+      }
+    });
+  }
+
+  dragOver(e, status, cx) {
+    const p = this.press;
+    if (!p) return;
+    if (!p.moved) {
+      if (Math.hypot(e.position.x - p.x, e.position.y - p.y) < DRAG_PX) return;
+      p.moved = true;
+    }
+    if (this.over !== status || !p.shown) { this.over = status; p.shown = true; cx.notify(); }
+  }
+
+  drop(status, cx) {
+    const p = this.press;
+    if (!p?.moved || p.dropped) return;
+    p.dropped = true;
+    if (status !== p.status) this.move(p.key, status, cx);
+  }
+
+  endDrag(cx) {
+    if (!this.press) return;
+    const shown = this.press.moved;
+    this.press = null; this.over = null;
+    if (shown) cx.notify();
+  }
+
+  dropTarget(el, status) {
+    return el.on_mouse_move((e, cx) => this.dragOver(e, status, cx)).on_mouse_up("left", (_e, cx) => this.drop(status, cx));
+  }
+
+  // The keyboard's lanes: a folded lane's cards can't be selected.
+  walkable(board) {
+    return board.lanes.map((l) => (this.width < WIDE && this.collapsed.has(l.status) ? { ...l, cards: [] } : l));
+  }
+
+  // Scrolls the selected card into view: a wide board scrolls each lane, a
+  // narrow one scrolls one list of lane headers and cards.
+  reveal(board) {
+    if (this.width >= WIDE) {
+      for (const lane of board.lanes) {
+        const i = lane.cards.findIndex((c) => c.key === this.selected);
+        if (i >= 0) this.laneScroll[lane.status].scroll_to_item(i);
+      }
+      return;
+    }
+    let index = 0;
+    for (const lane of board.lanes) {
+      index++;
+      if (this.collapsed.has(lane.status)) continue;
+      const i = lane.cards.findIndex((c) => c.key === this.selected);
+      if (i >= 0) return this.listScroll.scroll_to_item(index + i);
+      index += lane.cards.length;
+    }
+  }
+
+  onKey(e, cx) {
+    if (this.typing) {
+      if (e.key === "escape" || e.key === "down") { this.handle.focus(); cx.stop_propagation(); cx.notify(); }
+      return;
+    }
+    if (e.modifiers.control || e.modifiers.platform || e.modifiers.alt) return;
+    const board = lanes(this.tasks, { project: this.filter, query: this.query });
+    const card = board.lanes.flatMap((l) => l.cards).find((c) => c.key === this.selected);
+    const dir = { up: "up", down: "down", left: "left", right: "right", k: "up", j: "down", h: "left", l: "right" }[e.key];
+    if (dir && e.modifiers.shift && (dir === "left" || dir === "right")) {
+      const status = card && STATUSES[STATUSES.indexOf(card.status) + (dir === "left" ? -1 : 1)];
+      if (status) this.move(card.key, status, cx);
+    } else if (dir) {
+      this.selected = neighbor(this.walkable(board), card ? card.key : null, dir);
+      this.reveal(board);
+    } else if (e.key === "enter" && card) this.openCard(card);
+    else if (e.key === "m" && card) this.openMenu(card);
+    else if (e.key === "n") this.newTask();
+    else if (e.key === "/" || e.key_char === "/") this.search.focus();
+    else if (e.key === "escape") {
+      if (this.query) { this.search.set_value(""); this.query = ""; } else this.selected = null;
+    } else return;
+    cx.stop_propagation();
+    cx.notify();
+  }
+
   openCard(card) {
-    openOverlay({ mod: "trail-board", kind: "dialog", width: 680, height: 0.8, props: { role: "detail", root: this.project.root, on: this.on ?? null, key: card.key } });
+    openOverlay({ mod: "trail-board", kind: "dialog", width: 680, height: 0.8, props: { role: "detail", root: this.project.root, on: this.on ?? null, key: card.key, from: this.from() } });
   }
 
   openMenu(card) {
     const { key, title, status, assignee, priority, kind, project } = card;
-    openOverlay({ mod: "trail-board", kind: "popup", width: 240, height: 460, props: { role: "menu", root: this.project.root, on: this.on ?? null, task: { key, title, status, assignee, priority, kind, project } } });
+    openOverlay({ mod: "trail-board", kind: "popup", width: 240, height: 460, props: { role: "menu", root: this.project.root, on: this.on ?? null, task: { key, title, status, assignee, priority, kind, project }, from: this.from() } });
   }
 
   newTask() {
     if (!this.project) return;
     const projects = [...new Set([...this.tasks.map((x) => x.project), ...this.project.projects.map((p) => p.key)])].sort();
-    openCreate({ root: this.project.root, on: this.on ?? null, projects, project: this.filter ?? projects[0] ?? "" });
+    openCreate({ root: this.project.root, on: this.on ?? null, projects, project: this.filter ?? projects[0] ?? "", from: this.from() });
+  }
+
+  // Who gets the keyboard back when an overlay this board opens closes.
+  from() {
+    return this.handle.is_focused() ? this.id : null;
   }
 
   card(c, t) {
     const done = c.subtasks ? `${c.subtasks.done}/${c.subtasks.total} subtasks` : null;
     const assignee = c.assignee && c.assignee !== "UNASSIGNED" ? c.assignee : null;
-    return h_flex().id(`card-${c.key}`).flex_none().w_full().rounded(8).overflow_hidden().border_1().border_color(t.border).bg(t.background)
-      .cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.openCard(c)).on_mouse_down("right", () => this.openMenu(c))
+    const card = h_flex().id(`card-${c.key}`).flex_none().w_full().rounded(8).overflow_hidden().border_1()
+      .border_color(this.selected === c.key ? t.accent : t.border).bg(t.background)
+      .cursor_pointer().hover((s) => s.bg(t.hover))
+      .when(Boolean(this.press?.moved) && this.press.key === c.key, (e) => e.opacity(0.4))
+      // A press becomes a drag once it moves; one that doesn't is a click.
+      .on_mouse_down("left", (e) => { this.press = { key: c.key, status: c.status, x: e.position.x, y: e.position.y, moved: false, fresh: true }; })
+      .on_mouse_up("left", (_e, cx) => {
+        if (this.press?.key !== c.key || this.press.moved) return;
+        this.selected = c.key; cx.notify();
+        this.openCard(c);
+      })
+      .on_mouse_down("right", (_e, cx) => { this.selected = c.key; cx.notify(); this.openMenu(c); })
       .child(div().w(3).self_stretch().flex_none().bg(priorityColor(t, c.priority)))
       .child(v_flex().flex_1().min_w(0).px(9).py(7).gap(3)
         .child(h_flex().gap(6).items_center().text_size(11)
@@ -139,11 +299,18 @@ export default class TrailBoard extends View {
           .when(Boolean(assignee), (e) => e.child(div().child(assignee)))
           .when(Boolean(done), (e) => e.child(div().child(done)))
           .when(Boolean(c.blockedBy?.length), (e) => e.child(div().text_color(t.ansi1).child(`blocked by ${c.blockedBy.join(", ")}`))))));
+    return this.dropTarget(card, c.status);
+  }
+
+  // Whether a drag is over `status`, a lane it would move its card to.
+  dropping(status) {
+    return Boolean(this.press?.moved) && this.over === status && this.press.status !== status;
   }
 
   laneHeader(lane, t, foldable) {
     const shut = foldable && this.collapsed.has(lane.status);
-    return h_flex().id(`lane-${lane.status}`).h(28).flex_none().px(4).gap(6).items_center()
+    return this.dropTarget(h_flex().id(`lane-${lane.status}`), lane.status).h(28).flex_none().px(4).gap(6).items_center().rounded(6)
+      .border_1().border_color(foldable && this.dropping(lane.status) ? t.accent : t.background)
       .when(foldable, (e) => e.cursor_pointer().on_click((_e, cx) => { shut ? this.collapsed.delete(lane.status) : this.collapsed.add(lane.status); cx.notify(); }))
       .when(foldable, (e) => e.child(svg(`mods/workspace-chrome/chevron-${shut ? "right" : "down"}.svg`).size(11).text_color(t.dim)))
       .child(div().text_size(12).font_semibold().child(STATUS_NAMES[lane.status]))
@@ -167,10 +334,19 @@ export default class TrailBoard extends View {
     if (props()?.role === "menu") return this.renderMenu(cx);
     if (props()?.role === "create") return this.renderCreate(cx);
     if (key() !== this.context) this.refresh(cx);
+    const back = shared(CLOSED);
+    if (back?.from === this.id && back.at !== this.seenBack) {
+      this.seenBack = back.at;
+      // focus() can't run during render: a timer runs it right after.
+      cx.timer.after(0, () => this.handle.focus());
+    }
     const write = shared(WROTE);
     if (write && write.at !== this.seenWrite) {
       this.seenWrite = write.at;
-      if (write.root === this.project?.root) this.refresh(cx);
+      if (write.root === this.project?.root) {
+        for (const k of write.keys ?? []) this.own.set(k, Date.now());
+        this.refresh(cx);
+      }
     }
     const t = theme();
     const board = lanes(this.tasks, { project: this.filter, query: this.query });
@@ -178,19 +354,31 @@ export default class TrailBoard extends View {
     const wide = this.width >= WIDE;
     const note = this.error || (!this.project && this.loading ? "Loading tasks…" : null);
     const body = wide
-      ? h_flex().flex_1().min_h(0).items_stretch().gap(10).px(10).pb(10).children(board.lanes.map((lane) => v_flex().flex_1().min_w(0).min_h(0).gap(6)
+      ? h_flex().flex_1().min_h(0).items_stretch().gap(10).px(10).pb(10).children(board.lanes.map((lane) => this.dropTarget(v_flex().id(`column-${lane.status}`), lane.status)
+        .flex_1().min_w(0).min_h(0).gap(6).rounded(8).border_1().border_color(this.dropping(lane.status) ? t.accent : t.background)
         .child(this.laneHeader(lane, t, false))
         .child(div().flex_1().min_h(0).relative()
-          .child(v_flex().id(`cards-${lane.status}`).absolute().inset_0().overflow_y_scroll().gap(6).children(lane.cards.map((c) => this.card(c, t))))
+          .child(v_flex().id(`cards-${lane.status}`).absolute().inset_0().overflow_y_scroll().track_scroll(this.laneScroll[lane.status]).gap(6).children(lane.cards.map((c) => this.card(c, t))))
           .child(Scrollbar.vertical(`cards-${lane.status}`).absolute().inset_0()))))
       : div().flex_1().min_h(0).relative()
-        .child(v_flex().id("lanes").absolute().inset_0().overflow_y_scroll().px(10).pb(10).gap(6).children(board.lanes.flatMap((lane) => [
+        .child(v_flex().id("lanes").absolute().inset_0().overflow_y_scroll().track_scroll(this.listScroll).px(10).pb(10).gap(6).children(board.lanes.flatMap((lane) => [
           this.laneHeader(lane, t, true),
           ...(this.collapsed.has(lane.status) ? [] : lane.cards.map((c) => this.card(c, t))),
         ])))
         .child(Scrollbar.vertical("lanes").absolute().inset_0());
     return v_flex().id("trail-board").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
+      .track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx))
       .on_size_change((size, cx) => { if (Math.abs(size.width - this.width) > 1) { this.width = size.width; cx.notify(); } })
+      // A card's press runs first and marks itself fresh; any other press
+      // clears one left from a drag released outside the board, which
+      // reports no release here.
+      .on_mouse_down("left", () => {
+        this.handle.focus();
+        if (this.press?.fresh) this.press.fresh = false; else this.press = null;
+      })
+      .on_mouse_up("left", (_e, cx) => this.endDrag(cx))
+      .on_hover((hovered, cx) => { if (!hovered && this.over) { this.over = null; cx.notify(); } })
+      .when(Boolean(this.press?.moved), (e) => e.cursor_grabbing())
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Tasks"))
         .when(Boolean(this.project), (e) => e.child(div().text_size(11).text_color(t.dim).child(this.project.root.split("/").pop())))
@@ -207,6 +395,11 @@ export default class TrailBoard extends View {
       .when(!note, (e) => e.child(body));
   }
 
+  async close() {
+    const from = props()?.from;
+    if (from && !this.away && !this.handedOff) setShared(CLOSED, { from, at: Date.now() });
+  }
+
   // The detail dialog.
 
   initDetail(cx) {
@@ -217,7 +410,7 @@ export default class TrailBoard extends View {
         const sh = shell(on);
         const [task, tasks] = await Promise.all([readTask(sh, root, taskKey), readTasks(sh, root)]);
         this.task = task;
-        this.children = tasks.filter((x) => x.parent === taskKey).sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
+        this.children = tasks.filter((x) => x.parent === taskKey).sort(keyOrder);
       } catch (e) { this.error = String(e.message ?? e); }
       cx.notify();
     });
@@ -232,7 +425,7 @@ export default class TrailBoard extends View {
       fact("blocked by", task.blockedBy?.join(", ")), fact("related", task.related?.join(", ")),
       fact("updated", task.updatedAt?.slice(0, 10)),
     ].filter(Boolean) : [];
-    return v_flex().id("trail-detail").track_focus(this.handle).size_full().p(16).gap(10).bg(t.popover).text_size(13).text_color(t.foreground)
+    return v_flex().id("trail-detail").track_focus(this.handle).on_mouse_down_out(() => { this.away = true; }).size_full().p(16).gap(10).bg(t.popover).text_size(13).text_color(t.foreground)
       .on_key_down((e) => { if (e.key === "escape") closeOverlay(p.overlay); })
       .child(h_flex().gap(8).items_center()
         .child(div().font_family(mono()).text_size(12).text_color(t.dim).child(p.key))
@@ -265,8 +458,9 @@ export default class TrailBoard extends View {
     const p = props();
     if (this.busy) return;
     if (item.op === "subtask") {
+      this.handedOff = true;
       closeOverlay(p.overlay);
-      openCreate({ root: p.root, on: p.on, projects: [p.task.project], project: p.task.project, parent: { key: p.task.key, title: p.task.title } });
+      openCreate({ root: p.root, on: p.on, projects: [p.task.project], project: p.task.project, parent: { key: p.task.key, title: p.task.title }, from: p.from });
       return;
     }
     this.busy = true; this.error = null; cx.notify();
@@ -282,7 +476,7 @@ export default class TrailBoard extends View {
 
   renderMenu() {
     const t = theme(), p = props(), items = menuItems(p.task);
-    return v_flex().id("trail-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8).text_color(t.foreground)
+    return v_flex().id("trail-menu").track_focus(this.handle).on_mouse_down_out(() => { this.away = true; }).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8).text_color(t.foreground)
       .on_key_down((e, cx) => {
         if (e.key === "down") this.at = (this.at + 1) % items.length;
         else if (e.key === "up") this.at = (this.at + items.length - 1) % items.length;
@@ -340,7 +534,7 @@ export default class TrailBoard extends View {
     const button = (id, label, solid, action) => div().id(id).h(28).px(14).flex().items_center().rounded(6).text_size(12)
       .bg(solid ? (ready ? t.solid : t.raised) : t.raised).text_color(solid ? (ready ? t.solid_foreground : t.dim) : t.foreground)
       .when(!solid || ready, (e) => e.cursor_pointer().on_click(action)).child(label);
-    return v_flex().id("trail-create").track_focus(this.handle).size_full().p(16).gap(12).bg(t.popover).text_size(13).text_color(t.foreground)
+    return v_flex().id("trail-create").track_focus(this.handle).on_mouse_down_out(() => { this.away = true; }).size_full().p(16).gap(12).bg(t.popover).text_size(13).text_color(t.foreground)
       .on_key_down((e) => { if (e.key === "escape") closeOverlay(p.overlay); })
       .child(v_flex().gap(2)
         .child(div().font_semibold().child(p.parent ? `New subtask of ${p.parent.key}` : "New task"))

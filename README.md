@@ -45,8 +45,21 @@ layouts in `layouts/<name>.json`.
   when the panel is wide or the board has a tab of its own. Cards show the
   key, title, priority, a bug badge, assignee, subtasks done and blockers;
   subtasks count on their parent rather than getting cards. Filter by project
-  or search; click a card for its description and subtasks. Open it from the
-  Tasks button, or as a tab:
+  or search; click a card for its description and subtasks.
+
+  Right-click a card to pick it up, move it to another lane, assign it,
+  change its priority, add a subtask, or complete it (DONE once it is in
+  review, or WONTFIX). Drag a card to another lane to change its status. `+`
+  makes a task. When tasks change outside the board, by an agent or the
+  `trail` CLI, a notification says what changed.
+
+  Click the board to give it the keyboard: arrows (or `h` `j` `k` `l`)
+  select a card, Enter opens it, `m` opens its menu, Shift+Left/Right moves
+  it a lane, `n` makes a task, `/` searches and Esc clears. In `keys.json`,
+  `trail-board.new` opens the new-task dialog and `trail-board.focus` gives
+  the board the keyboard.
+
+  Open it from the Tasks button, or as a tab:
 
   ```sh
   herdr-app do tab.new '{"name":"Tasks","mod":"trail-board"}'

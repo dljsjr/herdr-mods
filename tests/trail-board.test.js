@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { exec, must, removeTempDirs, tempDir } from "./jj-helpers.js";
-import { act, createTask, findProject, lanes, menuItems, readTask, readTasks, tasksDir } from "../mods/trail-board/board.js";
+import { act, changes, createTask, findProject, keyOrder, lanes, menuItems, neighbor, readTask, readTasks, tasksDir } from "../mods/trail-board/board.js";
 
 afterEach(removeTempDirs);
 
@@ -213,5 +213,85 @@ describe("createTask", () => {
 
     const task = await readTask(exec, dir, key);
     expect([task.kind, task.parent, task.assignee]).toEqual(["SUBTASK", bug, "UNASSIGNED"]);
+  });
+});
+
+describe("neighbor", () => {
+  const lane = (status, ...keys) => ({ status, cards: keys.map((key) => ({ key })) });
+  const board = [lane("NOT STARTED", "A-1", "A-2", "A-3"), lane("IN PROGRESS"), lane("NEEDS REVIEW", "B-1", "B-2")];
+
+  test("starts on the first card whatever the key", () => {
+    expect(neighbor(board, null, "down")).toBe("A-1");
+    expect(neighbor(board, "GONE-1", "left")).toBe("A-1");
+  });
+
+  test("walks a lane, then on into the next lane with cards", () => {
+    expect(neighbor(board, "A-2", "down")).toBe("A-3");
+    expect(neighbor(board, "A-3", "down")).toBe("B-1");
+    expect(neighbor(board, "B-1", "up")).toBe("A-3");
+    expect(neighbor(board, "A-1", "up")).toBe("A-1");
+    expect(neighbor(board, "B-2", "down")).toBe("B-2");
+  });
+
+  test("goes sideways to the nearest lane with cards, at the same place or the last card", () => {
+    expect(neighbor(board, "A-3", "right")).toBe("B-2");
+    expect(neighbor(board, "B-1", "left")).toBe("A-1");
+    expect(neighbor(board, "B-1", "right")).toBe("B-1");
+  });
+
+  test("has nothing to select on an empty board", () => {
+    expect(neighbor([lane("NOT STARTED")], null, "down")).toBeNull();
+  });
+});
+
+describe("changes", () => {
+  const task = (key, fields) => ({ key, title: `Task ${key}`, status: "NOT STARTED", assignee: "UNASSIGNED", priority: "MEDIUM", resolution: "UNRESOLVED", ...fields });
+
+  test("says what changed, one line per change", () => {
+    const before = [task("X-1"), task("X-2"), task("X-3"), task("X-4")];
+    const after = [
+      task("X-1", { status: "NEEDS REVIEW", assignee: "AGENT" }),
+      task("X-2", { status: "COMPLETE", resolution: "WONTFIX" }),
+      task("X-3", { priority: "HIGH", title: "Better name" }),
+      task("X-5", { title: "Fresh" }),
+    ];
+
+    expect(changes(before, after)).toEqual([
+      { key: "X-1", text: "X-1 moved to needs review" },
+      { key: "X-1", text: "X-1 assigned to AGENT" },
+      { key: "X-2", text: "X-2 closed as WONTFIX" },
+      { key: "X-3", text: "X-3 priority high" },
+      { key: "X-3", text: "X-3 renamed: Better name" },
+      { key: "X-5", text: "X-5 added: Fresh" },
+      { key: "X-4", text: "X-4 removed" },
+    ]);
+  });
+
+  test("finds nothing when nothing a card shows changed", () => {
+    expect(changes([task("X-1")], [task("X-1", { updatedAt: "later" })])).toEqual([]);
+  });
+
+  test("calls an unassigned task unassigned", () => {
+    expect(changes([task("X-1", { assignee: "USER" })], [task("X-1")])).toEqual([{ key: "X-1", text: "X-1 unassigned" }]);
+  });
+});
+
+describe("keyOrder", () => {
+  // Herdr's script engine ignores localeCompare's { numeric: true }: compare
+  // as it does, so a key order that leans on it fails here too.
+  const plain = String.prototype.localeCompare;
+  beforeEach(() => { String.prototype.localeCompare = function (that) { return this < that ? -1 : this > that ? 1 : 0; }; });
+  afterEach(() => { String.prototype.localeCompare = plain; });
+
+  test("orders keys by project, then by number", () => {
+    const keys = ["DEMO-10", "OPS-2", "DEMO-5", "DEMO-100", "OPS-10"];
+
+    expect(keys.map((key) => ({ key })).sort(keyOrder).map((t) => t.key)).toEqual(["DEMO-5", "DEMO-10", "DEMO-100", "OPS-2", "OPS-10"]);
+  });
+
+  test("puts a lane's cards in number order when priority and kind tie", () => {
+    const task = (key) => ({ key, kind: "TASK", priority: "LOW", status: "NOT STARTED", title: key, project: "DEMO" });
+
+    expect(lanes([task("DEMO-10"), task("DEMO-9")]).lanes[0].cards.map((c) => c.key)).toEqual(["DEMO-9", "DEMO-10"]);
   });
 });
