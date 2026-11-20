@@ -32,12 +32,20 @@ Never install, reload or experiment with mods against the person's running Herdr
 1. Create `<scratch>/app-home/shared.json` containing `{"frame.welcomed":"skipped"}`. Also create `<scratch>/app-home/update-notes.json` containing `{"last_run":"<v>","presented":["<v>"]}`, where `<v>` is the version from `herdr-app --version`. Without them, a welcome dialog or a What's new window covers the window, and `overlay.close` cannot dismiss either.
 2. Install mods: `./install.sh install --app-home <scratch>/app-home`. This also works while the window runs; the app reloads the mod.
 3. Launch it as a background process: `env HERDR_APP_HOME=<scratch>/app-home HC_SESSION=<name> HERDR_TELEMETRY=0 herdr-app`. If an earlier scratch window is still quitting, the new launch hands off to it and exits at once, so wait for the old process to end.
-4. Drive it with the same `HERDR_APP_HOME` and `HC_SESSION`: `herdr-app status`, `ls`, `do`, `shot`. Open a mod with `space.new`, then `pane.split {mod, direction}`. New mod folders are not docked automatically. To see the jj layout's Changes panel, run `layout.switch {name: "jj"}`, `layout.show {id: "panel"}`, then `layout.select {stack: "panel-body", child: "changes"}`. The CLI cannot click inside a mod.
+4. Drive it with the same `HERDR_APP_HOME` and `HC_SESSION`: `herdr-app status`, `ls`, `do`, `shot`. Open a mod with `space.new`, then `pane.split {mod, direction}`. New mod folders are not docked automatically. To see the jj layout's Changes panel, run `layout.switch {name: "jj"}`, `layout.show {id: "panel"}`, then `layout.select {stack: "panel-body", child: "changes"}`. The CLI cannot click inside a mod; cua-driver can (load its skill), in the background, against the scratch window's pid:
+   - Pixel clicks, right-clicks and drags land. Coordinates follow the last `get_window_state` capture's size, so capture at the window's size before clicking.
+   - `type_text` goes to the focused terminal, not a mod's input; type into mod fields one `press_key` at a time.
+   - A background drag presses without moving the pointer there first, so Herdr hit-tests the press at the old pointer position. Click the card first (Esc closes what that opens), then drag from the same point.
+   - `herdr-app status` and `shot` can miss a popup that is open; a cua-driver capture shows it.
 5. Clean up: `herdr-app do app.quit`, then `hc server stop` with the same `HC_SESSION`, then delete `<scratch>`.
 
 Do not set `XDG_STATE_HOME`. Shells in the scratch window inherit it and leave stray daemons such as watchman behind. `HC_SESSION` alone separates the core's state.
 
 In a `v_virtual_list`, the row renderer can't attach handlers: `on_click` and the rest throw there, and the list draws nothing, without an error in `herdr-app status`. Use the list's `on_item_click` and `on_item_secondary_click`, which get the row's key.
+
+`FocusHandle.focus()` throws during render, and `cx.spawn` runs its function's first part during render too; defer it with `cx.timer.after(0, ...)`. Herdr closes a dialog or popup on Esc before the mod's own `on_key_down` sees the key, so put what must happen on close in the view's `close()`.
+
+Herdr's script engine ignores `localeCompare`'s options: `{ numeric: true }` still sorts `X-10` before `X-5`. Bun honours them, so a test must stub `localeCompare` to catch it.
 
 For `window.paint_path`, give `PathBuilder` coordinates as percentages of the painted bounds. Pixel coordinates don't scale with Herdr's zoom the way element sizes do, so lines drift off the elements they should meet.
 
