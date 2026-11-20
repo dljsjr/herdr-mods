@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { exec, must, removeTempDirs, tempDir } from "./jj-helpers.js";
-import { findProject, lanes, readTask, readTasks, tasksDir } from "../mods/trail-board/board.js";
+import { act, createTask, findProject, lanes, menuItems, readTask, readTasks, tasksDir } from "../mods/trail-board/board.js";
 
 afterEach(removeTempDirs);
 
@@ -139,5 +139,79 @@ describe("tasksDir", () => {
     const { dir } = board();
 
     expect(await tasksDir(exec, dir)).toBe(join(dir, "boards", "work"));
+  });
+});
+
+describe("menuItems", () => {
+  const task = (fields) => ({ key: "X-1", kind: "TASK", status: "NOT STARTED", assignee: "UNASSIGNED", priority: "MEDIUM", ...fields });
+  const ops = (items) => items.map((i) => `${i.op}${i.value ? ` ${i.value}` : ""}`);
+
+  test("offers only what would change the task", () => {
+    expect(ops(menuItems(task({})))).toEqual([
+      "pickup", "status IN PROGRESS", "status NEEDS REVIEW",
+      "assign USER", "assign AGENT", "priority HIGH", "priority LOW",
+      "subtask", "complete WONTFIX",
+    ]);
+  });
+
+  test("offers DONE only from NEEDS REVIEW, as trail requires, and no subtask of a subtask", () => {
+    const items = ops(menuItems(task({ kind: "SUBTASK", status: "NEEDS REVIEW", assignee: "AGENT", priority: "HIGH" })));
+
+    expect(items).toContain("complete DONE");
+    expect(items).toContain("assign UNASSIGNED");
+    expect(items).not.toContain("subtask");
+    expect(items).not.toContain("status NEEDS REVIEW");
+  });
+
+  test("doesn't offer pick up for a task in progress", () => {
+    expect(ops(menuItems(task({ status: "IN PROGRESS" })))).not.toContain("pickup");
+  });
+
+  test("groups items so the menu can draw dividers between them", () => {
+    const groups = menuItems(task({})).map((i) => i.group);
+
+    expect([...new Set(groups)]).toEqual(["status", "assignee", "priority", "subtask", "complete"]);
+  });
+});
+
+describe("act", () => {
+  test("runs each menu action through trail", async () => {
+    const { dir, low } = board();
+
+    await act(exec, dir, low, { op: "pickup" });
+    await act(exec, dir, low, { op: "assign", value: "USER" });
+    await act(exec, dir, low, { op: "priority", value: "HIGH" });
+    await act(exec, dir, low, { op: "status", value: "NEEDS REVIEW" });
+    await act(exec, dir, low, { op: "complete", value: "DONE" });
+
+    const task = await readTask(exec, dir, low);
+    expect([task.status, task.resolution, task.assignee, task.priority]).toEqual(["COMPLETE", "DONE", "USER", "HIGH"]);
+  });
+
+  test("rejects with trail's own reason when trail refuses", async () => {
+    const { dir, high } = board();
+
+    await expect(act(exec, dir, high, { op: "complete", value: "DONE" })).rejects.toThrow(/NEEDS REVIEW/);
+  });
+});
+
+describe("createTask", () => {
+  test("creates a task with its description and assignee and returns its key", async () => {
+    const { dir } = board();
+
+    const key = await createTask(exec, dir, { project: "OPS", title: "New one", kind: "BUG", priority: "HIGH", description: "Some *text*", assignee: "AGENT" });
+
+    const task = await readTask(exec, dir, key);
+    expect([task.project, task.title, task.kind, task.priority, task.assignee, task.reporter]).toEqual(["OPS", "New one", "BUG", "HIGH", "AGENT", "USER"]);
+    expect(task.description).toContain("Some *text*");
+  });
+
+  test("creates a subtask under its parent", async () => {
+    const { dir, bug } = board();
+
+    const key = await createTask(exec, dir, { project: "BRD", title: "Part", kind: "SUBTASK", parent: bug });
+
+    const task = await readTask(exec, dir, key);
+    expect([task.kind, task.parent, task.assignee]).toEqual(["SUBTASK", bug, "UNASSIGNED"]);
   });
 });

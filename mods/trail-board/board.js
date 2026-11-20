@@ -3,6 +3,9 @@
 // stderr }.
 
 export const STATUSES = ["NOT STARTED", "IN PROGRESS", "NEEDS REVIEW"];
+export const STATUS_NAMES = { "NOT STARTED": "Not started", "IN PROGRESS": "In progress", "NEEDS REVIEW": "Needs review" };
+export const PRIORITIES = ["HIGH", "MEDIUM", "LOW"];
+export const ASSIGNEES = ["UNASSIGNED", "USER", "AGENT"];
 const PRIORITY = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 const KIND = { BUG: 0, TASK: 1, SUBTASK: 2 };
 
@@ -79,4 +82,46 @@ export function lanes(tasks, { project = null, query = "", subtasks = false } = 
     })),
     complete: shown.filter((t) => t.status === "COMPLETE").length,
   };
+}
+
+// A card's menu: what can be done to `task` from where it is, as { label, op,
+// value, group }, for act() (op "subtask" asks for a new subtask instead).
+// Items that would change nothing are left out, and DONE needs NEEDS REVIEW
+// first, as trail requires.
+export function menuItems(task) {
+  const items = [];
+  const add = (group, label, op, value) => items.push({ group, label, op, value });
+  if (task.status !== "IN PROGRESS") add("status", "Pick up", "pickup");
+  for (const s of STATUSES) if (s !== task.status) add("status", `Move to ${STATUS_NAMES[s].toLowerCase()}`, "status", s);
+  for (const a of ["USER", "AGENT", "UNASSIGNED"]) if (a !== task.assignee) add("assignee", a === "UNASSIGNED" ? "Unassign" : `Assign to ${a}`, "assign", a);
+  for (const p of PRIORITIES) if (p !== task.priority) add("priority", `Priority ${p.toLowerCase()}`, "priority", p);
+  if (task.kind !== "SUBTASK") add("subtask", "Add subtask…", "subtask");
+  if (task.status === "NEEDS REVIEW") add("complete", "Complete as done", "complete", "DONE");
+  add("complete", "Close as won't fix", "complete", "WONTFIX");
+  return items;
+}
+
+// One change to task `key` through trail. `value` is the status, assignee,
+// priority or resolution. Rejects with trail's reason when it refuses.
+export async function act(exec, root, key, { op, value }) {
+  const args = {
+    pickup: ["task", "pickup", key],
+    status: ["task", "update", key, "--status", value],
+    assign: ["task", "update", key, "--assignee", value],
+    priority: ["task", "update", key, "--priority", value],
+    complete: ["task", "complete", key, "--resolution", value],
+  }[op];
+  if (!args) throw new Error(`Unknown task action: ${op}`);
+  await trail(exec, root, args);
+}
+
+// Creates a task reported by USER and returns its key. trail task create
+// can't set an assignee, so one other than UNASSIGNED is a second command.
+export async function createTask(exec, root, { project, title, kind = "TASK", priority = "MEDIUM", parent = null, description = "", assignee = "UNASSIGNED" }) {
+  const args = ["task", "create", "-p", project, "-t", title, "-k", kind, "--priority", priority, "--reporter", "USER"];
+  if (parent) args.push("--parent", parent);
+  if (description.trim()) args.push("--desc", description.trim());
+  const [task] = await trail(exec, root, args);
+  if (assignee !== "UNASSIGNED") await act(exec, root, task.key, { op: "assign", value: assignee });
+  return task.key;
 }

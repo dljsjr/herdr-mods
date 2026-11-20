@@ -1,16 +1,17 @@
 // trail-board: the Trail tasks of the focused folder's project as a board.
-// board.js reads them through the trail CLI. Lanes stack as sections in a
-// narrow panel and stand side by side when it is wide. Click a card for its
-// details, which open as a dialog drawn by this mod with props { role:
-// "detail", root, on, key }.
+// board.js reads and writes them through the trail CLI. Lanes stack as
+// sections in a narrow panel and stand side by side when it is wide. Click a
+// card for its details and right-click it for its menu; + makes a task. This
+// mod draws those too, as overlays with props { role: "detail" | "menu" |
+// "create", root, on, ... }.
 //
 // location() follows defaults/mods/changes in herdr-app 0.1.12
 // (https://github.com/herdrdev/herdr-app), licensed under the Apache License,
 // Version 2.0. See LICENSE-Apache-2.0.txt beside this file.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Input, InputState, Scrollbar, TextView } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, settings, props, openOverlay, closeOverlay } from "herdr";
-import { findProject, lanes, readTask, readTasks, tasksDir } from "./board.js";
+import { v_flex, h_flex, Input, InputState, Scrollbar, TextView, Textarea, TextareaState } from "gpui-base";
+import { spaces, panes, focused, exec, watchFolder, theme, settings, props, openOverlay, closeOverlay, shared, setShared } from "herdr";
+import { ASSIGNEES, PRIORITIES, STATUS_NAMES, act, createTask, findProject, lanes, menuItems, readTask, readTasks, tasksDir } from "./board.js";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -22,15 +23,25 @@ const key = () => JSON.stringify(location());
 const shell = (on) => (command, args, cwd) => exec(command, args, { cwd, on });
 const mono = () => settings().font_family ?? "JetBrains Mono";
 const WIDE = 720; // px from which lanes stand side by side
-const LANE_NAMES = { "NOT STARTED": "Not started", "IN PROGRESS": "In progress", "NEEDS REVIEW": "Needs review" };
 const priorityColor = (t, p) => (p === "HIGH" ? t.ansi1 : p === "MEDIUM" ? t.ansi3 : t.dim);
 // Changes inside a repo's own records don't change tasks.
 const META = /\/\.(git|jj)(\/|$)/;
+// A write from any copy (a menu, a dialog) lands here, so every board showing
+// that project refreshes at once: a remote machine has no folder watch.
+const WROTE = "trail-board.wrote";
+const wrote = (root, keys) => setShared(WROTE, { root, keys, at: Date.now() });
+
+function openCreate({ root, on, projects, project, parent = null }) {
+  openOverlay({ mod: "trail-board", kind: "dialog", width: 520, height: 480, props: { role: "create", root, on, projects, project, parent } });
+}
 
 export default class TrailBoard extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
     if (props()?.role === "detail") return this.initDetail(cx);
+    if (props()?.role === "menu") return this.initMenu(cx);
+    if (props()?.role === "create") return this.initCreate(cx);
+    this.seenWrite = shared(WROTE)?.at;
     this.tasks = []; this.project = null; this.filter = null; this.query = ""; this.width = 0;
     this.collapsed = new Set(); // lanes a narrow board folds
     this.found = new Map(); // folder -> its trail project, once looked up
@@ -100,11 +111,22 @@ export default class TrailBoard extends View {
     openOverlay({ mod: "trail-board", kind: "dialog", width: 680, height: 0.8, props: { role: "detail", root: this.project.root, on: this.on ?? null, key: card.key } });
   }
 
+  openMenu(card) {
+    const { key, title, status, assignee, priority, kind, project } = card;
+    openOverlay({ mod: "trail-board", kind: "popup", width: 240, height: 460, props: { role: "menu", root: this.project.root, on: this.on ?? null, task: { key, title, status, assignee, priority, kind, project } } });
+  }
+
+  newTask() {
+    if (!this.project) return;
+    const projects = [...new Set([...this.tasks.map((x) => x.project), ...this.project.projects.map((p) => p.key)])].sort();
+    openCreate({ root: this.project.root, on: this.on ?? null, projects, project: this.filter ?? projects[0] ?? "" });
+  }
+
   card(c, t) {
     const done = c.subtasks ? `${c.subtasks.done}/${c.subtasks.total} subtasks` : null;
     const assignee = c.assignee && c.assignee !== "UNASSIGNED" ? c.assignee : null;
     return h_flex().id(`card-${c.key}`).flex_none().w_full().rounded(8).overflow_hidden().border_1().border_color(t.border).bg(t.background)
-      .cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.openCard(c))
+      .cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => this.openCard(c)).on_mouse_down("right", () => this.openMenu(c))
       .child(div().w(3).self_stretch().flex_none().bg(priorityColor(t, c.priority)))
       .child(v_flex().flex_1().min_w(0).px(9).py(7).gap(3)
         .child(h_flex().gap(6).items_center().text_size(11)
@@ -124,7 +146,7 @@ export default class TrailBoard extends View {
     return h_flex().id(`lane-${lane.status}`).h(28).flex_none().px(4).gap(6).items_center()
       .when(foldable, (e) => e.cursor_pointer().on_click((_e, cx) => { shut ? this.collapsed.delete(lane.status) : this.collapsed.add(lane.status); cx.notify(); }))
       .when(foldable, (e) => e.child(svg(`mods/workspace-chrome/chevron-${shut ? "right" : "down"}.svg`).size(11).text_color(t.dim)))
-      .child(div().text_size(12).font_semibold().child(LANE_NAMES[lane.status]))
+      .child(div().text_size(12).font_semibold().child(STATUS_NAMES[lane.status]))
       .child(div().text_size(11).text_color(t.dim).child(String(lane.cards.length)));
   }
 
@@ -142,7 +164,14 @@ export default class TrailBoard extends View {
 
   render(cx) {
     if (props()?.role === "detail") return this.renderDetail(cx);
+    if (props()?.role === "menu") return this.renderMenu(cx);
+    if (props()?.role === "create") return this.renderCreate(cx);
     if (key() !== this.context) this.refresh(cx);
+    const write = shared(WROTE);
+    if (write && write.at !== this.seenWrite) {
+      this.seenWrite = write.at;
+      if (write.root === this.project?.root) this.refresh(cx);
+    }
     const t = theme();
     const board = lanes(this.tasks, { project: this.filter, query: this.query });
     const open = board.lanes.reduce((n, l) => n + l.cards.length, 0);
@@ -167,7 +196,10 @@ export default class TrailBoard extends View {
         .when(Boolean(this.project), (e) => e.child(div().text_size(11).text_color(t.dim).child(this.project.root.split("/").pop())))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.muted).child(`${open} open`))
-        .when(board.complete > 0, (e) => e.child(div().text_size(11).text_color(t.dim).child(`${board.complete} complete`))))
+        .when(board.complete > 0, (e) => e.child(div().text_size(11).text_color(t.dim).child(`${board.complete} complete`)))
+        .when(Boolean(this.project), (e) => e.child(div().id("new-task").size(24).flex_none().flex().items_center().justify_center().rounded(6)
+          .text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(() => this.newTask())
+          .child(svg("mods/workspace-chrome/plus.svg").size(14)))))
       .child(div().flex_none().mx(10).my(8).h(28).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).cursor_text()
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.search).h_full().text_size(12).text_color(t.foreground)))
       .when(Boolean(this.chips(t)), (e) => e.child(this.chips(t)))
@@ -220,5 +252,114 @@ export default class TrailBoard extends View {
                 .child(div().flex_1().min_w(0).truncate().child(s.title)))))))
           .child(Scrollbar.vertical("detail-body").absolute().inset_0())))
       .child(h_flex().justify_end().text_size(11).text_color(t.dim).child("esc close"));
+  }
+
+  // The card menu.
+
+  initMenu() {
+    this.handle.focus();
+    this.at = 0;
+  }
+
+  chooseMenu(item, cx) {
+    const p = props();
+    if (this.busy) return;
+    if (item.op === "subtask") {
+      closeOverlay(p.overlay);
+      openCreate({ root: p.root, on: p.on, projects: [p.task.project], project: p.task.project, parent: { key: p.task.key, title: p.task.title } });
+      return;
+    }
+    this.busy = true; this.error = null; cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await act(shell(p.on), p.root, p.task.key, item);
+        wrote(p.root, [p.task.key]);
+        closeOverlay(p.overlay);
+      } catch (e) { this.error = String(e.message ?? e); }
+      this.busy = false; cx.notify();
+    });
+  }
+
+  renderMenu() {
+    const t = theme(), p = props(), items = menuItems(p.task);
+    return v_flex().id("trail-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8).text_color(t.foreground)
+      .on_key_down((e, cx) => {
+        if (e.key === "down") this.at = (this.at + 1) % items.length;
+        else if (e.key === "up") this.at = (this.at + items.length - 1) % items.length;
+        else if (e.key === "enter") return this.chooseMenu(items[this.at], cx);
+        else if (e.key === "escape") return closeOverlay(p.overlay);
+        else return;
+        cx.notify();
+      })
+      .child(div().px(8).pt(4).pb(6).text_size(11).text_color(t.dim).truncate().child(`${p.task.key} \u00b7 ${p.task.title}`))
+      .children(items.map((item, i) => v_flex()
+        .when(i > 0 && items[i - 1].group !== item.group, (e) => e.child(div().mx(7).my(4).h(1).bg(t.border)))
+        .child(h_flex().id(`tm-${i}`).h(28).px(8).rounded(7).items_center().cursor_pointer()
+          .when(i === this.at, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.chooseMenu(item, cx))
+          .child(div().flex_1().child(item.label)))))
+      .when(this.busy, (e) => e.child(div().px(8).py(6).text_size(11).text_color(t.dim).child("Working\u2026")))
+      .when(Boolean(this.error), (e) => e.child(div().px(8).py(6).text_size(11).text_color(t.blocked).whitespace_normal().child(this.error)));
+  }
+
+  // The create dialog.
+
+  initCreate() {
+    const p = props();
+    this.fields = { project: p.project, kind: p.parent ? "SUBTASK" : "TASK", priority: "MEDIUM", assignee: "UNASSIGNED" };
+    this.title = InputState.new({ placeholder: p.parent ? "Subtask title" : "Task title" });
+    this.title.on("change", (_e, cx) => { this.error = null; cx.notify(); });
+    this.title.on("submit", (_e, cx) => this.create(cx));
+    this.desc = TextareaState.new({ placeholder: "Description, in Markdown (optional)", rows: 7 });
+    this.title.focus();
+  }
+
+  create(cx) {
+    const p = props(), title = this.title.value().trim();
+    if (this.busy || !title || !this.fields.project) return;
+    this.busy = true; this.error = null; cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const key = await createTask(shell(p.on), p.root, { ...this.fields, title, parent: p.parent?.key ?? null, description: this.desc.value() });
+        wrote(p.root, [key, ...(p.parent ? [p.parent.key] : [])]);
+        closeOverlay(p.overlay);
+      } catch (e) { this.error = String(e.message ?? e); }
+      this.busy = false; cx.notify();
+    });
+  }
+
+  renderCreate() {
+    const t = theme(), p = props(), f = this.fields;
+    const lower = (v) => v.toLowerCase();
+    const chips = (field, values, label = (v) => v) => h_flex().flex_wrap().gap(6).children(values.map((v) => div().id(`${field}-${v}`)
+      .px(9).py(3).rounded(10).text_size(12).cursor_pointer().border_1().border_color(f[field] === v ? t.accent : t.border)
+      .text_color(f[field] === v ? t.foreground : t.muted).hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { f[field] = v; cx.notify(); }).child(label(v))));
+    const field = (name, el) => h_flex().gap(10).items_center().child(div().w(64).flex_none().text_size(11).text_color(t.dim).child(name)).child(el);
+    const ready = !this.busy && Boolean(f.project) && Boolean(this.title.value().trim());
+    const button = (id, label, solid, action) => div().id(id).h(28).px(14).flex().items_center().rounded(6).text_size(12)
+      .bg(solid ? (ready ? t.solid : t.raised) : t.raised).text_color(solid ? (ready ? t.solid_foreground : t.dim) : t.foreground)
+      .when(!solid || ready, (e) => e.cursor_pointer().on_click(action)).child(label);
+    return v_flex().id("trail-create").track_focus(this.handle).size_full().p(16).gap(12).bg(t.popover).text_size(13).text_color(t.foreground)
+      .on_key_down((e) => { if (e.key === "escape") closeOverlay(p.overlay); })
+      .child(v_flex().gap(2)
+        .child(div().font_semibold().child(p.parent ? `New subtask of ${p.parent.key}` : "New task"))
+        .when(Boolean(p.parent), (e) => e.child(div().text_size(12).text_color(t.muted).truncate().child(p.parent.title))))
+      .child(div().id("create-title").h(32).flex_none().px(10).flex().items_center().rounded(6).border_1().border_color(t.input).bg(t.background).cursor_text()
+        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.title.focus(); })
+        .child(Input.new(this.title).h_full().text_size(13).text_color(t.foreground)))
+      .when(!p.parent, (e) => e
+        .child(field("Project", p.projects.length ? chips("project", p.projects) : div().text_size(12).text_color(t.dim).child("No projects yet: make one with trail project create.")))
+        .child(field("Kind", chips("kind", ["TASK", "BUG"], lower))))
+      .child(field("Priority", chips("priority", PRIORITIES, lower)))
+      .child(field("Assignee", chips("assignee", ASSIGNEES, lower)))
+      .child(div().id("create-desc").flex_1().min_h(0).px(10).py(6).rounded(6).border_1().border_color(t.input).bg(t.background).cursor_text()
+        .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); this.desc.focus(); })
+        .child(Textarea.new(this.desc).text_size(12.5).text_color(t.foreground)))
+      .when(Boolean(this.error), (e) => e.child(div().text_size(12).text_color(t.blocked).whitespace_normal().child(this.error)))
+      .child(h_flex().gap(8).items_center()
+        .child(div().flex_1().text_size(11).text_color(t.dim).child(this.busy ? "Creating\u2026" : "\u21b5 create \u00b7 esc cancel"))
+        .child(button("create-cancel", "Cancel", false, () => closeOverlay(p.overlay)))
+        .child(button("create-ok", "Create", true, (_e, cx) => this.create(cx))));
   }
 }
